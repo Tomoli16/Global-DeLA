@@ -14,6 +14,7 @@ import utils.util as util
 from delasemseg import DelaSemSeg
 from time import time, sleep
 from config import s3dis_args, s3dis_warmup_args, dela_args, batch_size, learning_rate as lr, epoch, warmup, label_smoothing as ls
+import wandb
 
 torch.set_float32_matmul_precision("high")
 
@@ -42,6 +43,21 @@ sys.stdout = logfile
 sys.stderr = errfile
 # 
 print(r"base ")
+
+# Initialize wandb
+wandb.init(
+    project="DeLA-S3DIS",
+    name=f"run_{cur_id}",
+    config={
+        "batch_size": batch_size,
+        "learning_rate": lr,
+        "epochs": epoch,
+        "warmup_epochs": warmup,
+        "label_smoothing": ls,
+        **s3dis_args,
+        **dela_args,
+    },
+)
 
 traindlr = DataLoader(S3DIS(s3dis_args, partition="!5", loop=30), batch_size=batch_size, 
                       collate_fn=s3dis_collate_fn, shuffle=True, pin_memory=True, 
@@ -94,10 +110,26 @@ for i in range(start_epoch, epoch):
         metric.update(p.detach(), y)
         ttls.update(loss.item())
         corls.update(closs.item())
+
+        # Backpropagation
         optimizer.zero_grad(set_to_none=True)
         scaler.scale(loss + closs*lam).backward()
         scaler.step(optimizer)
         scaler.update()
+
+    train_miou = metric.miou
+    train_loss = ttls.avg
+    train_closs = corls.avg
+    wandb.log(
+        {
+            "epoch": i,
+            "train_loss": train_loss,
+            "train_closs": train_closs,
+            "train_miou": train_miou,
+            "learning_rate": optimizer.param_groups[0]["lr"],
+        },
+        step=i,
+    )
         
     print(f"epoch {i}:")
     print(f"loss: {round(ttls.avg, 4)} || cls: {round(corls.avg, 4)}")
@@ -115,6 +147,12 @@ for i in range(start_epoch, epoch):
                 p = model(xyz, feature, indices)
             metric.update(p, y)
     
+    val_miou = metric.miou
+    wandb.log({
+        "epoch": i,
+        "val_miou": val_miou,
+    }, step=i)
+    
     metric.print("val:  ")
     print(f"duration: {time() - now}")
     cur = metric.miou
@@ -124,3 +162,4 @@ for i in range(start_epoch, epoch):
         util.save_state(f"output/model/{cur_id}/best.pt", model=model)
     
     util.save_state(f"output/model/{cur_id}/last.pt", model=model, optimizer=optimizer, scaler=scaler, start_epoch=i+1)
+wandb.finish()
