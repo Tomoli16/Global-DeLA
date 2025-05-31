@@ -54,8 +54,8 @@ wandb.init(
         "epochs": epoch,
         "warmup_epochs": warmup,
         "label_smoothing": ls,
-        **s3dis_args,
-        **dela_args,
+        **vars(s3dis_args),
+        **vars(dela_args),
     },
 )
 
@@ -87,6 +87,7 @@ metric = util.Metric(13)
 ttls = util.AverageMeter() 
 corls = util.AverageMeter() 
 best = 0
+print("Starting warmup...")
 warmup_fn(model, S3DIS(s3dis_warmup_args, partition="!5", loop=batch_size, warmup=True))
 for i in range(start_epoch, epoch):
     model.train()
