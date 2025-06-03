@@ -65,6 +65,8 @@ traindlr = DataLoader(S3DIS(s3dis_args, partition="!5", loop=30), batch_size=bat
 testdlr = DataLoader(S3DIS(s3dis_args, partition="5", loop=1, train=False), batch_size=1,
                       collate_fn=s3dis_collate_fn, pin_memory=True, 
                       persistent_workers=True, num_workers=16)
+print(len(traindlr))
+
 
 step_per_epoch = len(traindlr)
 
@@ -118,6 +120,12 @@ for i in range(start_epoch, epoch):
         scaler.step(optimizer)
         scaler.update()
 
+    
+    
+        
+    print(f"epoch {i}:")
+    print(f"loss: {round(ttls.avg, 4)} || cls: {round(corls.avg, 4)}")
+    metric.print("train:")
     train_miou = metric.miou
     train_loss = ttls.avg
     train_closs = corls.avg
@@ -131,10 +139,6 @@ for i in range(start_epoch, epoch):
         },
         step=i,
     )
-        
-    print(f"epoch {i}:")
-    print(f"loss: {round(ttls.avg, 4)} || cls: {round(corls.avg, 4)}")
-    metric.print("train:")
 
     model.eval()
     metric.reset()
@@ -148,13 +152,15 @@ for i in range(start_epoch, epoch):
                 p = model(xyz, feature, indices)
             metric.update(p, y)
     
+    
+    
+    
+    metric.print("val:  ")
     val_miou = metric.miou
     wandb.log({
         "epoch": i,
         "val_miou": val_miou,
     }, step=i)
-    
-    metric.print("val:  ")
     print(f"duration: {time() - now}")
     cur = metric.miou
     if best < cur:

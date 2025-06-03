@@ -1,0 +1,15 @@
+# ninja log v5
+1	14231	1748710442000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/ball_query.o	1c1fe45d943416be
+3	14408	1748710442000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/sampling.o	9292c340cc3d5603
+2	14465	1748710442000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/group_points.o	993d02c5d6ea5dcf
+2	14494	1748710442000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/interpolate.o	2d8c30f9e229995c
+2	15520	1748710443000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/bindings.o	42715b3929ab979a
+2	15776	1748710443000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/ball_query_gpu.o	61399f3dae76cf9c
+3	15917	1748710443000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/interpolate_gpu.o	b0862652dc63d0b3
+2	16258	1748710444000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/group_points_gpu.o	b811b85d752d78ba
+3	16464	1748710444000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/sampling_gpu.o	11fbd0f734d3e75a
+116	11803	1748761036000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/group_points.o	993d02c5d6ea5dcf
+116	11909	1748761036000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/interpolate.o	2d8c30f9e229995c
+116	12191	1748761037000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/sampling.o	9292c340cc3d5603
+115	12198	1748761037000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/ball_query.o	1c1fe45d943416be
+115	13042	1748761037000000000	/data/horse/ws/tosa098h-pointcept/DeLA/utils/pointnet2_ops_lib/build/temp.linux-x86_64-cpython-310/pointnet2_ops/_ext-src/src/bindings.o	42715b3929ab979a

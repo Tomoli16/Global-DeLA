@@ -9,6 +9,8 @@ sys.path.append(str(Path(__file__).absolute().parent.parent))
 from utils.timm.models.layers import DropPath
 from utils.cutils import knn_edge_maxpooling
 
+# Normalerweise speichert PyTorch beim Forward-Pass alle Zwischenergebnisse (Activations) für den Backward-Pass.
+# Mit Checkpointing werden diese Zwischenergebnisse nicht gespeichert, sondern die Forward-Pass-Funktion wird bei Bedarf erneut aufgerufen.
 def checkpoint(function, *args, **kwargs):
     return torch_checkpoint(function, *args, use_reentrant=False, **kwargs)
 
@@ -97,7 +99,7 @@ class Stage(nn.Module):
 
         self.k = args.ks[depth]
 
-        self.cp = cp = args.use_cp
+        self.cp = cp = args.use_cp  # Checkpointing
         cp_bn_momentum = args.cp_bn_momentum if cp else args.bn_momentum
 
         dim = args.dims[depth]
@@ -164,12 +166,12 @@ class Stage(nn.Module):
         knn = indices.pop()
         
         # spatial encoding
-        N, k = knn.shape
-        nbr = xyz[knn] - xyz.unsqueeze(1)
+        N, k = knn.shape    # jeder der N Punkte hat an Stelle knn[i] die Indizes der k nächsten Nachbarn
+        nbr = xyz[knn] - xyz.unsqueeze(1)   # xyz[knn] # N x k x 3 xyz.unsqueeze(1) # N x 1 x 3
         nbr = torch.cat([nbr, x[knn]], dim=-1).view(-1, 7) if self.first else nbr.view(-1, 3)
         if self.training and self.cp:
             nbr.requires_grad_()
-        nbr_embed_func = lambda x: self.nbr_embed(x).view(N, k, -1).max(dim=1)[0]
+        nbr_embed_func = lambda x: self.nbr_embed(x).view(N, k, -1).max(dim=1)[0]   # Pro Punkt, pro Feature, max über die k Nachbarn, N x k x C -> N x C
         nbr = checkpoint(nbr_embed_func, nbr) if self.training and self.cp else nbr_embed_func(nbr)
         nbr = self.nbr_proj(nbr)
         nbr = self.nbr_bn(nbr)
@@ -251,7 +253,9 @@ class DelaSemSeg(nn.Module):
             if isinstance(m, nn.Linear) and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
+    # xyz: coords x: Feature
     def forward(self, xyz, x, indices, pts_list=None):
+        # Flat copy
         indices = indices[:]
         x, closs = self.stage(x, xyz, None, indices, pts_list)
         if self.training:

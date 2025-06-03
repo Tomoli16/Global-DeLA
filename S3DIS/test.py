@@ -20,7 +20,7 @@ testdlr = DataLoader(S3DIS(s3dis_args, partition="5", loop=loop, train=False, te
 
 model = DelaSemSeg(dela_args).cuda()
 
-util.load_state("pretrained/best.pt", model=model)
+util.load_state("output/model/01/best.pt", model=model)
 
 model.eval()
 
