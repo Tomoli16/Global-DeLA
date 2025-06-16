@@ -13,7 +13,7 @@ processed_data_path = raw_data_path.parent / "s3dis"
 
 epoch = 100
 warmup = 10
-batch_size = 8
+batch_size = 16
 learning_rate = 6e-3
 label_smoothing = 0.2
 
@@ -29,6 +29,8 @@ s3dis_warmup_args.grid_size = [0.04, 3.5, 3.5, 3.5]
 dela_args = SimpleNamespace()
 dela_args.ks = s3dis_args.k
 dela_args.depths = [4, 4, 8, 4]
+dela_args.grid_size = [0.04, 0.08, 0.16, 0.32]
+dela_args.order = "z"
 dela_args.dims = [64, 128, 256, 512]
 dela_args.nbr_dims = [32, 32]
 dela_args.head_dim = 256

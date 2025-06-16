@@ -59,7 +59,7 @@ wandb.init(
     },
 )
 
-traindlr = DataLoader(S3DIS(s3dis_args, partition="!5", loop=30), batch_size=batch_size, 
+traindlr = DataLoader(S3DIS(s3dis_args, partition="!5", loop=30), batch_size=batch_size, # xyz, feature, indices, lbl
                       collate_fn=s3dis_collate_fn, shuffle=True, pin_memory=True, 
                       persistent_workers=True, drop_last=True, num_workers=16)
 testdlr = DataLoader(S3DIS(s3dis_args, partition="5", loop=1, train=False), batch_size=1,

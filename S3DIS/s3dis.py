@@ -194,7 +194,7 @@ def fix_indices(indices: list[torch.Tensor], cnt1: list, cnt2: list):
     if not first:
         indices.pop().add_(c1)
 
-
+# Bestimmt wie aus einzelnen Samples ein Batch erstellt wird.
 def s3dis_collate_fn(batch):
     """
     [[xcil], [xcil], ...]
@@ -203,7 +203,7 @@ def s3dis_collate_fn(batch):
 
     depth = (len(indices[0]) + 2) // 3
     cnt1 = [0] * depth
-    pts = []
+    pts = []     # Anzahl der Punkte in jedem Sample für jedes Level
 
     for ids in indices:
         pts.extend(x.shape[0] for x in ids[:2*depth:2])

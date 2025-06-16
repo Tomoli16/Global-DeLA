@@ -1,0 +1,3 @@
+[submodule "modules/mamba"]
+	path = modules/mamba
+	url = git@github.com:state-spaces/mamba.git

@@ -8,11 +8,16 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).absolute().parent.parent))
 from utils.timm.models.layers import DropPath
 from utils.cutils import knn_edge_maxpooling
+from utils.transforms import serialization
+from mamba_layer import MambaBlock
+
 
 # Normalerweise speichert PyTorch beim Forward-Pass alle Zwischenergebnisse (Activations) für den Backward-Pass.
 # Mit Checkpointing werden diese Zwischenergebnisse nicht gespeichert, sondern die Forward-Pass-Funktion wird bei Bedarf erneut aufgerufen.
 def checkpoint(function, *args, **kwargs):
     return torch_checkpoint(function, *args, use_reentrant=False, **kwargs)
+
+
 
 class LFP(nn.Module):
     r"""
@@ -32,6 +37,41 @@ class LFP(nn.Module):
         x = knn_edge_maxpooling(x, knn, self.training)
         x = self.bn(x.view(B*N, -1)).view(B, N, -1)
         return x
+    
+class PosEmbedder(nn.Module):
+    """
+    Positional Embedding via MLP for point coordinates.
+
+    Maps input coordinates (B, N, 3) to embeddings (B, N, embed_dim) that can be added to features.
+    """
+    def __init__(self, in_dim: int = 3, embed_dim: int = 64, hidden_dim: int = None, 
+                 act: nn.Module = nn.GELU, bn_momentum: float = 0.1):
+        super().__init__()
+        # if no hidden dim specified, project directly
+        hidden = hidden_dim or embed_dim
+        layers = []
+        # first linear layer
+        layers.append(nn.Linear(in_dim, hidden, bias=False))
+        layers.append(nn.BatchNorm1d(hidden, momentum=bn_momentum))
+        layers.append(act())
+        # second projection to embed_dim
+        layers.append(nn.Linear(hidden, embed_dim, bias=False))
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, xyz: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            xyz: Tensor of shape (B, N, in_dim)
+        Returns:
+            Tensor of shape (B, N, embed_dim)
+        """
+        B, N, _ = xyz.shape
+        # flatten batch and points for linear and BN
+        x_flat = xyz.view(B * N, -1)
+        emb_flat = self.mlp(x_flat)
+        # reshape back to (B, N, embed_dim)
+        emb = emb_flat.view(B, N, -1)
+        return emb
 
 class Mlp(nn.Module):
     def __init__(self, in_dim, mlp_ratio, bn_momentum, act, init=0.):
@@ -98,11 +138,17 @@ class Stage(nn.Module):
         self.last = last = depth == self.up_depth
 
         self.k = args.ks[depth]
+        dim = args.dims[depth]
+
+        self.grid_size = args.grid_size[depth]  # grid size for serialization
+        self.order = args.order
+        self.pos_emb = PosEmbedder(in_dim=3, embed_dim=dim, hidden_dim=dim, act=args.act, bn_momentum=args.bn_momentum)
+
 
         self.cp = cp = args.use_cp  # Checkpointing
         cp_bn_momentum = args.cp_bn_momentum if cp else args.bn_momentum
 
-        dim = args.dims[depth]
+        
         nbr_in_dim = 7 if first else 3
         nbr_hid_dim = args.nbr_dims[0] if first else args.nbr_dims[1] // 2
         nbr_out_dim = dim if first else args.nbr_dims[1]
@@ -146,18 +192,38 @@ class Stage(nn.Module):
 
         if not last:
             self.sub_stage = Stage(args, depth + 1)
+
+        self.mamba = MambaBlock(dim, depth)
     
     def local_aggregation(self, x, knn, pts):
-        x = x.unsqueeze(0)
+        x = x.unsqueeze(0)  # N x C -> 1 x N x C
         x = self.blk(x, knn, pts)
-        x = x.squeeze(0)
+        x = x.squeeze(0) # 1 x N x C -> N x C
         return x
+    
+    def mamba_aggregation(self, x, xyz, pts, order="z"):
+        """
+        x: 1 x N x C
+        xyz: 1 x N x 3
+        pts: Anzahl der Punkte in jedem Sample für jedes Level
+        TODO: pos embedding für xyu und auf feature (xyz) addieren
+        """
+
+        xyz, x, x_res = serialization(xyz, x, x, order=order, grid_size=self.grid_size)
+        self.order = order
+        pos_emb = self.pos_emb(xyz)    # (B,N,dim)
+        x = x + pos_emb                # räumliche Information ergänzen
+
+        x, x_res = self.mamba(x, residual=x_res)
+        return x
+        
 
     def forward(self, x, xyz, prev_knn, indices, pts_list):
         """
         x: N x C
         """
         # downsampling
+        print(f"Stage {self.depth} | Input: {x.shape}, xyz: {xyz.shape}, prev_knn: {prev_knn.shape if prev_knn is not None else None}")
         if not self.first:
             ids = indices.pop()
             xyz = xyz[ids]
@@ -177,18 +243,28 @@ class Stage(nn.Module):
         nbr = self.nbr_bn(nbr)
         x = nbr if self.first else nbr + x
 
-        # main block
+        # Local aggregation block
         knn = knn.unsqueeze(0)
         pts = pts_list.pop() if pts_list is not None else None
         x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
 
-        # get subsequent feature maps
+        # Mamba aggregation
+        x = x.unsqueeze(0)  # N x C -> 1 x N x C
+        xyz = xyz.unsqueeze(0)  # N x 3 -> 1 x N x 3
+        if self.training and self.cp:
+            x = checkpoint(self.mamba_aggregation, x, xyz, pts, order=self.order)
+        else:
+            x = self.mamba_aggregation(x, xyz, pts, order=self.order)
+        x = x.squeeze(0)  # 1 x N x C -> N x C
+        xyz = xyz.squeeze(0)  # 1 x N x 3 -> N x 3
+
+        # get subsequent feature maps (Rekursiver Aufruf)
         if not self.last:
             sub_x, sub_c = self.sub_stage(x, xyz, knn, indices, pts_list)
         else:
             sub_x = sub_c = None
-        
-        # regularization
+
+        # regularization (Macht Vorhersagen über relative Positionen)
         if self.training:
             rel_k = torch.randint(self.k, (N, 1), device=x.device)
             rel_k = torch.gather(knn.squeeze(0), 1, rel_k).squeeze(1)
