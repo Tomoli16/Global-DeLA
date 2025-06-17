@@ -10,6 +10,8 @@ from utils.timm.models.layers import DropPath
 from utils.cutils import knn_edge_maxpooling
 from utils.transforms import serialization
 from mamba_layer import MambaBlock
+from mamba_layer import Mamba2Block
+
 
 
 # Normalerweise speichert PyTorch beim Forward-Pass alle Zwischenergebnisse (Activations) für den Backward-Pass.
@@ -194,6 +196,7 @@ class Stage(nn.Module):
             self.sub_stage = Stage(args, depth + 1)
 
         self.mamba = MambaBlock(dim, depth)
+        self.mamba2 = Mamba2Block(dim, depth)
     
     def local_aggregation(self, x, knn, pts):
         x = x.unsqueeze(0)  # N x C -> 1 x N x C
@@ -216,14 +219,48 @@ class Stage(nn.Module):
 
         x, x_res = self.mamba(x, residual=x_res)
         return x
+    
+    def mamba2_aggregation(self, x_flat, xyz, pts, inference_params=None):
+        """
+        x_flat: Tensor [sum_i Ni, C]  (flattened batch of all scenes)
+        pts:    Tensor [B]           (#Points per scene)
+        """
+        device = x_flat.device
+        # 1) pts in Tensor umwandeln
+        if isinstance(pts, list):
+            # dtype must be integer
+            pts_tensor = torch.tensor(pts, dtype=torch.long, device=device)
+        else:
+            pts_tensor = pts.to(device=device, dtype=torch.long)
+
+        # 2) cumulative sequence lengths: [0, N0, N0+N1, ...]
+        cu_seqlens = torch.cat([
+            pts_tensor.new_zeros(1),        # → [0]
+            pts_tensor.cumsum(0)            # → [N0, N0+N1, ...]
+        ])  # shape = [B+1]
+
+        # 3) Aufruf von Mamba2
+        u_out, res = self.mamba2(
+            x_flat,
+            cu_seqlens=cu_seqlens,
+            inference_params=inference_params
+        )
+
+        # 4) (Optional) zurück splitten, falls Du es brauchst
+        #    chunks = u_out.split(pts_tensor.tolist(), dim=0)
+        #    x_flat_out = torch.cat(chunks, dim=0)
+
+        return u_out, res
         
 
     def forward(self, x, xyz, prev_knn, indices, pts_list):
         """
         x: N x C
         """
+        # ganz oben in Deiner forward(...)
+        pts0 = pts_list[0]
+        
         # downsampling
-        print(f"Stage {self.depth} | Input: {x.shape}, xyz: {xyz.shape}, prev_knn: {prev_knn.shape if prev_knn is not None else None}")
         if not self.first:
             ids = indices.pop()
             xyz = xyz[ids]
@@ -248,15 +285,18 @@ class Stage(nn.Module):
         pts = pts_list.pop() if pts_list is not None else None
         x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
 
-        # Mamba aggregation
-        x = x.unsqueeze(0)  # N x C -> 1 x N x C
-        xyz = xyz.unsqueeze(0)  # N x 3 -> 1 x N x 3
-        if self.training and self.cp:
-            x = checkpoint(self.mamba_aggregation, x, xyz, pts, order=self.order)
-        else:
-            x = self.mamba_aggregation(x, xyz, pts, order=self.order)
-        x = x.squeeze(0)  # 1 x N x C -> N x C
-        xyz = xyz.squeeze(0)  # 1 x N x 3 -> N x 3
+        # # Mamba aggregation
+        # x = x.unsqueeze(0)  # N x C -> 1 x N x C
+        # xyz = xyz.unsqueeze(0)  # N x 3 -> 1 x N x 3
+        # if self.training and self.cp:
+        #     x = checkpoint(self.mamba_aggregation, x, xyz, pts, order=self.order)
+        # else:
+        #     x = self.mamba_aggregation(x, xyz, pts, order=self.order)
+        # x = x.squeeze(0)  # 1 x N x C -> N x C
+        # xyz = xyz.squeeze(0)  # 1 x N x 3 -> N x 3
+
+        # Mamba2 aggregation
+        x, _ = self.mamba2_aggregation(x, xyz, pts0)
 
         # get subsequent feature maps (Rekursiver Aufruf)
         if not self.last:

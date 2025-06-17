@@ -147,9 +147,10 @@ for i in range(start_epoch, epoch):
             xyz = xyz.cuda(non_blocking=True)
             feature = feature.cuda(non_blocking=True)
             indices = [ii.cuda(non_blocking=True).long() for ii in indices[::-1]]
+            pts = pts.tolist()[::-1]
             y = y.cuda(non_blocking=True)
             with autocast():
-                p = model(xyz, feature, indices)
+                p = model(xyz, feature, indices, pts)
             metric.update(p, y)
     
     
