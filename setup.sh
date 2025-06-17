@@ -1,15 +1,14 @@
-# This script sets up the environment for DeLA by installing the required packages.
 #!/bin/bash
 
-# conda create -n dela python=3.10 -y
-# conda activate dela
+conda create -n dela python=3.10 -y
+conda activate dela
 
 
 pip install torch==2.1.1 torchvision==0.16.1 torchaudio==2.1.1 --index-url https://download.pytorch.org/whl/cu121
 pip install wandb
 pip install addict
 pip install timm
-# pip install "numpy<2.0"
+pip install "numpy<2.0"
 
 module load CUDA/12.1.1
 
@@ -28,3 +27,4 @@ pip install -e .[causal-conv1d] --no-build-isolation
 cd ../..
 
 echo "Environment setup complete. You can now run DeLA."
+# Run with: source setup.sh
