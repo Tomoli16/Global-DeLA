@@ -208,30 +208,12 @@ class Stage(nn.Module):
         x_flat: Tensor [sum_i Ni, C]  (flattened batch of all scenes)
         pts:    Tensor [B]           (#Points per scene)
         """
-        device = x_flat.device
-        # 1) pts in Tensor umwandeln
-        if isinstance(pts, list):
-            # dtype must be integer
-            pts_tensor = torch.tensor(pts, dtype=torch.long, device=device)
-        else:
-            pts_tensor = pts.to(device=device, dtype=torch.long)
-
-        # 2) cumulative sequence lengths: [0, N0, N0+N1, ...]
-        cu_seqlens = torch.cat([
-            pts_tensor.new_zeros(1),        # → [0]
-            pts_tensor.cumsum(0)            # → [N0, N0+N1, ...]
-        ])  # shape = [B+1]
-
-        # 3) Aufruf von Mamba2
+        # 1) Aufruf von Mamba2
         u_out, res = self.mamba2(
             x_flat,
-            cu_seqlens=cu_seqlens,
+            pts=pts,
             inference_params=inference_params
         )
-
-        # 4) (Optional) zurück splitten, falls Du es brauchst
-        #    chunks = u_out.split(pts_tensor.tolist(), dim=0)
-        #    x_flat_out = torch.cat(chunks, dim=0)
 
         return u_out, res
         
@@ -271,7 +253,6 @@ class Stage(nn.Module):
 
         # Mamba2 aggregation
         x, _ = self.mamba2_aggregation(x, xyz, pts0)
-        x, residual = self.mamba2_block(x_flat, pts=pts_list[self.depth], inference_params=params)
 
 
         # get subsequent feature maps (Rekursiver Aufruf)
