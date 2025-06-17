@@ -14,3 +14,6 @@ wandb-debug.log
 *.log
 *.out
 *.err
+
+S3DIS/output/
+
