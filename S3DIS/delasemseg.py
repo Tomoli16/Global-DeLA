@@ -9,7 +9,6 @@ sys.path.append(str(Path(__file__).absolute().parent.parent))
 from utils.timm.models.layers import DropPath
 from utils.cutils import knn_edge_maxpooling
 from utils.transforms import serialization
-from mamba_layer import MambaBlock
 from mamba_layer import Mamba2Block
 
 
@@ -195,30 +194,14 @@ class Stage(nn.Module):
         if not last:
             self.sub_stage = Stage(args, depth + 1)
 
-        self.mamba = MambaBlock(dim, depth)
-        self.mamba2 = Mamba2Block(dim, depth)
+        self.mamba2_block = Mamba2Block(dim, depth)
     
     def local_aggregation(self, x, knn, pts):
         x = x.unsqueeze(0)  # N x C -> 1 x N x C
         x = self.blk(x, knn, pts)
         x = x.squeeze(0) # 1 x N x C -> N x C
         return x
-    
-    def mamba_aggregation(self, x, xyz, pts, order="z"):
-        """
-        x: 1 x N x C
-        xyz: 1 x N x 3
-        pts: Anzahl der Punkte in jedem Sample für jedes Level
-        TODO: pos embedding für xyu und auf feature (xyz) addieren
-        """
 
-        xyz, x, x_res = serialization(xyz, x, x, order=order, grid_size=self.grid_size)
-        self.order = order
-        pos_emb = self.pos_emb(xyz)    # (B,N,dim)
-        x = x + pos_emb                # räumliche Information ergänzen
-
-        x, x_res = self.mamba(x, residual=x_res)
-        return x
     
     def mamba2_aggregation(self, x_flat, xyz, pts, inference_params=None):
         """
@@ -285,18 +268,11 @@ class Stage(nn.Module):
         pts = pts_list.pop() if pts_list is not None else None
         x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
 
-        # # Mamba aggregation
-        # x = x.unsqueeze(0)  # N x C -> 1 x N x C
-        # xyz = xyz.unsqueeze(0)  # N x 3 -> 1 x N x 3
-        # if self.training and self.cp:
-        #     x = checkpoint(self.mamba_aggregation, x, xyz, pts, order=self.order)
-        # else:
-        #     x = self.mamba_aggregation(x, xyz, pts, order=self.order)
-        # x = x.squeeze(0)  # 1 x N x C -> N x C
-        # xyz = xyz.squeeze(0)  # 1 x N x 3 -> N x 3
 
         # Mamba2 aggregation
         x, _ = self.mamba2_aggregation(x, xyz, pts0)
+        x, residual = self.mamba2_block(x_flat, pts=pts_list[self.depth], inference_params=params)
+
 
         # get subsequent feature maps (Rekursiver Aufruf)
         if not self.last:

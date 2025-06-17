@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from functools import partial
-
+from einops import rearrange
 import sys
 import os
 
@@ -14,30 +14,48 @@ from mamba_ssm.modules.mamba2 import Mamba2
 # from mamba_ssm.ops.triton.layernorm import RMSNorm, layer_norm_fn, rms_norm_fn
 from timm.models.layers import DropPath
 
-class Mamba2Block(nn.Module):
-    def __init__(
-            self, dim, layer_idx, 
-            norm_cls=nn.LayerNorm, fused_add_norm=False,
-            residual_in_fp32=False, drop_path=0., **mamba_kwargs
-    ):
-        """
-        Simple block wrapping a mixer class with LayerNorm/RMSNorm and residual connection"
+def build_cu_seqlens(pts, device=None, dtype=torch.long):
+    """
+    Convert per-scene point counts to cumulative sequence lengths tensor.
 
-        This Block has a slightly different structure compared to a regular
-        prenorm Transformer block.
-        The standard block is: LN -> MHA/MLP -> Add.
-        [Ref: https://arxiv.org/abs/2002.04745]
-        Here we have: Add -> LN -> Mixer, returning both
-        the hidden_states (output of the mixer) and the residual.
-        This is purely for performance reasons, as we can fuse add and LayerNorm.
-        The residual needs to be provided (except for the very first block).
-        """
+    Args:
+        pts: List[int] or Tensor [B] of point counts per scene
+        device: torch.device for output
+        dtype: torch.dtype for output
+    Returns:
+        cu_seqlens: Tensor [B+1]
+    """
+    if not isinstance(pts, torch.Tensor):
+        pts_tensor = torch.tensor(pts, dtype=dtype, device=device)
+    else:
+        pts_tensor = pts.to(device=device, dtype=dtype)
+    zeros = pts_tensor.new_zeros(1)
+    return torch.cat([zeros, pts_tensor.cumsum(0)], dim=0)
+
+class Mamba2Block(nn.Module):
+    """
+    Block wrapping Mamba2 with pre/post norms, residual and optional drop path.
+
+    Accepts either 3D input [B, L, C] (constant-length) or flat [sum(Ni), C] plus cu_seqlens.
+    Automatically handles flattening/unflattening for variable-length sequences.
+    """
+    def __init__(
+            self, 
+            dim, 
+            layer_idx, 
+            drop_path=0.,
+            norm_cls=nn.LayerNorm, 
+            fused_add_norm=False,
+            residual_in_fp32=False, 
+            **mamba_kwargs
+    ):
         super().__init__()
         # partial erstellt Funktion, bei der bestimmte Argumente bereits gesetzt sind
         self.residual_in_fp32 = residual_in_fp32
         self.fused_add_norm = fused_add_norm
-
-        expand = 2
+        self.norm = norm_cls(dim)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        expand = mamba_kwargs.get("expand", 2)
         headdim = (dim*expand) // 8
         self.mamba2 = Mamba2(
             d_model=dim,
@@ -46,32 +64,25 @@ class Mamba2Block(nn.Module):
             use_mem_eff_path=False,
             **mamba_kwargs,
         )
-        self.norm = norm_cls(dim)
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        if self.fused_add_norm:
-            assert RMSNorm is not None, "RMSNorm import fails"
-            assert isinstance(
-                self.norm, (nn.LayerNorm, RMSNorm)
-            ), "Only LayerNorm and RMSNorm are supported for fused_add_norm"
+        
+
 
     def forward(
-            self, hidden_states, residual=None, inference_params=None, seq_idx=None, cu_seqlens=None
+            self, 
+            hidden_states, 
+            pts=None,
+            residual=None, 
+            inference_params=None,            
+            seq_idx=None, 
+            cu_seqlens=None
     ):
-        r"""Pass the input through the encoder layer.
-
-        Args:
-            hidden_states: the sequence to the encoder layer (required).
-            residual: hidden_states = Mixer(LN(residual))
-        """
-        if not self.fused_add_norm:
-            if residual is None:
-                residual = hidden_states
-            else:
-                residual = residual + self.drop_path(hidden_states)
-
-            hidden_states = self.norm(residual.to(dtype=self.norm.weight.dtype))
+        # Pre-Norm + Residual
+        if not self.fused:
+            res = x if residual is None else residual + self.drop_path(x)
             if self.residual_in_fp32:
-                residual = residual.to(torch.float32)
+                res = res.to(torch.float32)
+            x = self.norm(res)
+            residual = res
         else:
             fused_add_norm_fn = rms_norm_fn if isinstance(self.norm, RMSNorm) else layer_norm_fn
             if residual is None:
@@ -94,11 +105,33 @@ class Mamba2Block(nn.Module):
                     residual_in_fp32=self.residual_in_fp32,
                     eps=self.norm.eps,
                 )
-        hidden_states = hidden_states.unsqueeze(0)  # Add batch dimension for Mamba2
-        hidden_states = self.mamba2(hidden_states, seq_idx=seq_idx, cu_seqlens=cu_seqlens, inference_params=inference_params)
-        hidden_states = hidden_states.squeeze(0)  # Remove batch dimension after Mamba2
-        return hidden_states, residual
+        # Determine input format
+        if cu_seqlens is not None:
+            # flat path: x is [sum(Ni), C]
+            u = x
+        else:
+            # constant-length path: x is [B, L, C]
+            u = rearrange(x, 'b l c -> (b l) c')
+            cu_seqlens = build_cu_seqlens(
+                pts if pts is not None else [x.size(1)] * x.size(0),
+                device=u.device
+            )
+            seq_idx = None
+                # Mamba2 forward
+        u_out = self.mamba2(
+            u,
+            seq_idx=seq_idx,
+            cu_seqlens=cu_seqlens,
+            inference_params=inference_params
+        )
 
-    def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None, **kwargs):
-        return self.mamba2.allocate_inference_cache(batch_size, max_seqlen, dtype=dtype, **kwargs)
+        # cleanup: unflatten if needed
+        if hasattr(x, 'dim') and x.dim() == 3:
+            # constant-length
+            b, l, c = x.shape
+            out = rearrange(u_out, '(b l) c -> b l c', b=b, l=l)
+        else:
+            out = u_out
+
+        return out, residual
 
