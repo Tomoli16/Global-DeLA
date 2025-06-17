@@ -1,10 +1,14 @@
 data/
 
-# Python
-__pycache__/
-*.py[cod]
+# C++/CUDA build artifacts
+utils/cutils/build/
+utils/pointnet2_ops_lib/build/
+**/__pycache__/
 *.so
-*.ipynb_checkpoints
+*.o
+*.pyc
+*.pyd
+*.ninja*
 
 # WandB
 wandb/
