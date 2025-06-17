@@ -15,5 +15,5 @@ wandb-debug.log
 *.out
 *.err
 
-S3DIS/output/
+S3DIS/output/model/
 
