@@ -12,6 +12,8 @@ from utils.transforms import serialization
 from utils.transforms import deserialization
 from mamba_layer import Mamba2Block
 import random
+from itertools import accumulate
+from utils.serialization import offset2batch, batch2offset
 
 
 
@@ -205,6 +207,32 @@ class Stage(nn.Module):
         x = self.blk(x, knn, pts)
         x = x.squeeze(0) # 1 x N x C -> N x C
         return x
+    
+    # def debugging_serialization(self, xyz, feat, x_res, pts):
+    #     """
+    #     xyz_flat: Tensor [sum_i Ni, 3]  (flattened batch of all scenes)
+    #     x_flat:   Tensor [sum_i Ni, C]  (flattened batch of all scenes)
+    #     pts:      List[int]             (#Points per scene)
+    #     """
+    #     # 1) Baue dein batch-Label vor der Serialisierung
+    #     offset = torch.tensor([0] + list(accumulate(pts)), device=xyz.device)
+    #     batch = offset2batch(offset)     # shape [P], Werte 0…B-1
+
+    #     # 2) Serialisiere einmal (hier mit einem festen order)
+    #     xyz_ser, feat_ser, x_res_ser, inv = serialization(
+    #         xyz, feat, x_res=x_res, order="z", pts=pts
+    #     )
+
+    #     # 3) Permutiere ebenfalls dein batch-Label:
+    #     batch_ser = batch[inv]  # Oder batch[order] je nachdem was du testest
+
+    #     # 4) Zähle, wie oft zwischen Szenen gewechselt wird
+    #     #    Wenn keine Vermischung stattfindet, musst du genau B−1 Übergänge haben.
+    #     transitions = (batch_ser[:-1] != batch_ser[1:]).sum().item()
+    #     print(f"Transitions in serialized sequence: {transitions} (expected {len(pts)-1})")
+
+    #     # 5) Optional: sieh dir die ersten 100 labels an
+    #     print("batch_ser[:100] =", batch_ser[:100].tolist())
 
     # Übernimmt das orchestrieren der Mamba2-Block-Operationen
     def mamba2_aggregation(self, x_flat, xyz_flat, pts, inference_params=None):
@@ -218,6 +246,24 @@ class Stage(nn.Module):
         possible_orders = self.order if isinstance(self.order, list) else [self.order]
         chosen_order = random.choice(possible_orders)
 
+        # # 1) Serialisieren
+        # xyz_ser, feat_ser, x_res_ser, inv_order = serialization(
+        #     xyz_flat, x_flat, x_res=x_flat,
+        #     order=chosen_order, pts=pts, grid_size=self.grid_size
+        # )
+
+        # # 2) Deserialisieren
+        # xyz_back, feat_back, x_res_back, layers_back = deserialization(
+        #     xyz_ser, feat_ser, x_res_ser,
+        #     inv_order
+        # )
+
+        # # 3) Assertions
+        # assert torch.allclose(xyz_flat, xyz_back), \
+        #     f"xyz mismatch: max diff = {(xyz_flat - xyz_back).abs().max():.3e}"
+
+        # assert torch.allclose(x_flat, feat_back), \
+        #     f"feat mismatch: max diff = {(x_flat - feat_back).abs().max():.3e}"
 
         
         # 2) Serialization
@@ -280,7 +326,6 @@ class Stage(nn.Module):
         knn = knn.unsqueeze(0)
         pts = pts_list.pop() if pts_list is not None else None
         x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
-
 
         # Mamba2 aggregation
         x, _ = self.mamba2_aggregation(x, xyz, pts0)

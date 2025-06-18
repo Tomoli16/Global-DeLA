@@ -68,7 +68,7 @@ class Mamba2Block(nn.Module):
         headdim = (dim*expand) // 8
         self.mamba2 = Mamba2(
             d_model=dim,
-            headdim=headdim, # n_heads=channels // 16,
+            headdim=headdim, 
             expand=expand,
             use_mem_eff_path=False,
             **mamba_kwargs,
