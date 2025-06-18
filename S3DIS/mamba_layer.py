@@ -25,12 +25,21 @@ def build_cu_seqlens(pts, device=None, dtype=torch.long):
     Returns:
         cu_seqlens: Tensor [B+1]
     """
-    if not isinstance(pts, torch.Tensor):
-        pts_tensor = torch.tensor(pts, dtype=dtype, device=device)
+
+    # 1) pts in Tensor umwandeln
+    if isinstance(pts, list):
+        # dtype must be integer
+        pts_tensor = torch.tensor(pts, dtype=torch.long, device=device)
     else:
-        pts_tensor = pts.to(device=device, dtype=dtype)
-    zeros = pts_tensor.new_zeros(1)
-    return torch.cat([zeros, pts_tensor.cumsum(0)], dim=0)
+        pts_tensor = pts.to(device=device, dtype=torch.long)
+
+    # 2) cumulative sequence lengths: [0, N0, N0+N1, ...]
+    cu_seqlens = torch.cat([
+        pts_tensor.new_zeros(1),        # → [0]
+        pts_tensor.cumsum(0)            # → [N0, N0+N1, ...]
+    ])  # shape = [B+1]
+    return cu_seqlens.to(device=device, dtype=dtype)
+
 
 class Mamba2Block(nn.Module):
     """
@@ -52,7 +61,7 @@ class Mamba2Block(nn.Module):
         super().__init__()
         # partial erstellt Funktion, bei der bestimmte Argumente bereits gesetzt sind
         self.residual_in_fp32 = residual_in_fp32
-        self.fused_add_norm = fused_add_norm
+        self.fused = fused_add_norm
         self.norm = norm_cls(dim)
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         expand = mamba_kwargs.get("expand", 2)
@@ -69,7 +78,7 @@ class Mamba2Block(nn.Module):
 
     def forward(
             self, 
-            hidden_states, 
+            x, 
             pts=None,
             residual=None, 
             inference_params=None,            
@@ -86,8 +95,8 @@ class Mamba2Block(nn.Module):
         else:
             fused_add_norm_fn = rms_norm_fn if isinstance(self.norm, RMSNorm) else layer_norm_fn
             if residual is None:
-                hidden_states, residual = fused_add_norm_fn(
-                    hidden_states,
+                x, residual = fused_add_norm_fn(
+                    x,
                     self.norm.weight,
                     self.norm.bias,
                     residual=residual,
@@ -96,8 +105,8 @@ class Mamba2Block(nn.Module):
                     eps=self.norm.eps,
                 )
             else:
-                hidden_states, residual = fused_add_norm_fn(
-                    self.drop_path(hidden_states),
+                x, residual = fused_add_norm_fn(
+                    self.drop_path(x),
                     self.norm.weight,
                     self.norm.bias,
                     residual=residual,
@@ -105,19 +114,14 @@ class Mamba2Block(nn.Module):
                     residual_in_fp32=self.residual_in_fp32,
                     eps=self.norm.eps,
                 )
-        # Determine input format
-        if cu_seqlens is not None:
-            # flat path: x is [sum(Ni), C]
-            u = x
-        else:
-            # constant-length path: x is [B, L, C]
-            u = rearrange(x, 'b l c -> (b l) c')
-            cu_seqlens = build_cu_seqlens(
-                pts if pts is not None else [x.size(1)] * x.size(0),
-                device=u.device
-            )
-            seq_idx = None
-                # Mamba2 forward
+
+        u = x.unsqueeze(0) 
+        cu_seqlens = build_cu_seqlens(
+            pts if pts is not None else [x.size(1)] * x.size(0),
+            device=u.device
+        )
+        seq_idx = None
+            # Mamba2 forward
         u_out = self.mamba2(
             u,
             seq_idx=seq_idx,
@@ -125,13 +129,9 @@ class Mamba2Block(nn.Module):
             inference_params=inference_params
         )
 
-        # cleanup: unflatten if needed
-        if hasattr(x, 'dim') and x.dim() == 3:
-            # constant-length
-            b, l, c = x.shape
-            out = rearrange(u_out, '(b l) c -> b l c', b=b, l=l)
-        else:
-            out = u_out
+
+        
+        out = u_out.squeeze(0)  # [B, L, C] or [sum(Ni), C]
 
         return out, residual
 

@@ -43,12 +43,17 @@ class PosEmbedder(nn.Module):
     """
     Positional Embedding via MLP for point coordinates.
 
-    Maps input coordinates (B, N, 3) to embeddings (B, N, embed_dim) that can be added to features.
+    Expects a flat input tensor of shape (P, in_dim), where P = total number of points (batch_size * num_points).
+    Outputs an embedding tensor of shape (P, embed_dim).
     """
-    def __init__(self, in_dim: int = 3, embed_dim: int = 64, hidden_dim: int = None, 
-                 act: nn.Module = nn.GELU, bn_momentum: float = 0.1):
+    def __init__(self,
+                 in_dim: int = 3,
+                 embed_dim: int = 64,
+                 hidden_dim: int = None,
+                 act: nn.Module = nn.GELU,
+                 bn_momentum: float = 0.1):
         super().__init__()
-        # if no hidden dim specified, project directly
+        # if no hidden dim specified, project directly to embed_dim
         hidden = hidden_dim or embed_dim
         layers = []
         # first linear layer
@@ -59,20 +64,17 @@ class PosEmbedder(nn.Module):
         layers.append(nn.Linear(hidden, embed_dim, bias=False))
         self.mlp = nn.Sequential(*layers)
 
-    def forward(self, xyz: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            xyz: Tensor of shape (B, N, in_dim)
+            x: Tensor of shape (P, in_dim)
         Returns:
-            Tensor of shape (B, N, embed_dim)
+            Tensor of shape (P, embed_dim)
         """
-        B, N, _ = xyz.shape
-        # flatten batch and points for linear and BN
-        x_flat = xyz.view(B * N, -1)
-        emb_flat = self.mlp(x_flat)
-        # reshape back to (B, N, embed_dim)
-        emb = emb_flat.view(B, N, -1)
+        # Directly apply MLP on flat input
+        emb = self.mlp(x)
         return emb
+
 
 class Mlp(nn.Module):
     def __init__(self, in_dim, mlp_ratio, bn_momentum, act, init=0.):
@@ -208,8 +210,12 @@ class Stage(nn.Module):
         x_flat: Tensor [sum_i Ni, C]  (flattened batch of all scenes)
         pts:    Tensor [B]           (#Points per scene)
         """
-        # 1) Aufruf von Mamba2
-        u_out, res = self.mamba2(
+        # # 1) Position Embedding
+        # xyz = self.pos_emb(xyz)  # xyz: [sum_i Ni, C]
+        # x_flat = x_flat + xyz  # add positional embedding to features
+    
+        # 2) Mamba2 Block
+        u_out, res = self.mamba2_block(
             x_flat,
             pts=pts,
             inference_params=inference_params
