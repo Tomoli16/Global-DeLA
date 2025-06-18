@@ -9,6 +9,7 @@ sys.path.append(str(Path(__file__).absolute().parent.parent))
 from utils.timm.models.layers import DropPath
 from utils.cutils import knn_edge_maxpooling
 from utils.transforms import serialization
+from utils.transforms import deserialization
 from mamba_layer import Mamba2Block
 
 
@@ -204,7 +205,7 @@ class Stage(nn.Module):
         x = x.squeeze(0) # 1 x N x C -> N x C
         return x
 
-    
+    # Übernimmt das orchestrieren der Mamba2-Block-Operationen
     def mamba2_aggregation(self, x_flat, xyz, pts, inference_params=None):
         """
         x_flat: Tensor [sum_i Ni, C]  (flattened batch of all scenes)
@@ -213,6 +214,9 @@ class Stage(nn.Module):
         # # 1) Position Embedding
         xyz = self.pos_emb(xyz)  # xyz: [sum_i Ni, C]
         x_flat = x_flat + xyz  # add positional embedding to features
+
+        # 2) Serialization
+
     
         # 2) Mamba2 Block
         u_out, res = self.mamba2_block(

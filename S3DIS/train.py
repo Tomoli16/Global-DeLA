@@ -32,7 +32,7 @@ def warmup_fn(model, dataset):
             loss = F.cross_entropy(p, y) + closs
         loss.backward()
 
-cur_id = "01"
+cur_id = "02"
 os.makedirs(f"output/log/{cur_id}", exist_ok=True)
 os.makedirs(f"output/model/{cur_id}", exist_ok=True)
 logfile = f"output/log/{cur_id}/out.log"
@@ -158,9 +158,13 @@ for i in range(start_epoch, epoch):
     
     metric.print("val:  ")
     val_miou = metric.miou
+    val_macc = metric.macc
+    val_acc = metric.acc
     wandb.log({
         "epoch": i,
         "val_miou": val_miou,
+        "val_macc": val_macc,
+        "val_acc": val_acc,
     }, step=i)
     print(f"duration: {time() - now}")
     cur = metric.miou

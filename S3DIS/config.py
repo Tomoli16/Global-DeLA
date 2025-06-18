@@ -13,7 +13,7 @@ processed_data_path = raw_data_path.parent / "s3dis"
 
 epoch = 100
 warmup = 10
-batch_size = 16
+batch_size = 24
 learning_rate = 6e-3
 label_smoothing = 0.2
 

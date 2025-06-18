@@ -30,3 +30,30 @@ def serialization(pos, feat, x_res=None, order="z", layers_outputs=[], grid_size
     for i in range(len(layers_outputs)):
         layers_outputs[i] = layers_outputs[i].flatten(0, 1)[order].reshape(bs, n_p, -1).contiguous()
     return pos, feat, x_res
+
+def deserialization(pos, feat, x_res=None, layers_outputs=None, inverse_order=None):
+    """
+    Revertiert die Permutation, die in `serialization` durch order erzeugt wurde.
+    Args:
+      pos, feat, x_res: Tensor [B, N, C] im serialisierten (permute-)Zustand
+      layers_outputs: Liste von Tensoren gleicher Form (optional)
+      inverse_order: LongTensor [B*N] mit Rückpermute-Indizes
+    Returns:
+      pos, feat, x_res, layers_outputs jeweils in Original-Reihenfolge
+    """
+    bs, n_p, _ = pos.size()
+    # flach machen, permuten, dann neu formen
+    def unpermute(tensor):
+        flat = tensor.flatten(0, 1)        # [B*N, C]
+        unflat = flat[inverse_order]       # zurück in Original-Index
+        return unflat.view(bs, n_p, -1).contiguous()
+
+    pos     = unpermute(pos)
+    feat    = unpermute(feat)
+    x_res   = unpermute(x_res)   if x_res   is not None else None
+
+    if layers_outputs is not None:
+        for i, lo in enumerate(layers_outputs):
+            layers_outputs[i] = unpermute(lo)
+
+    return pos, feat, x_res, layers_outputs
