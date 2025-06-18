@@ -211,8 +211,8 @@ class Stage(nn.Module):
         pts:    Tensor [B]           (#Points per scene)
         """
         # # 1) Position Embedding
-        # xyz = self.pos_emb(xyz)  # xyz: [sum_i Ni, C]
-        # x_flat = x_flat + xyz  # add positional embedding to features
+        xyz = self.pos_emb(xyz)  # xyz: [sum_i Ni, C]
+        x_flat = x_flat + xyz  # add positional embedding to features
     
         # 2) Mamba2 Block
         u_out, res = self.mamba2_block(
