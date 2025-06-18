@@ -11,6 +11,7 @@ from utils.cutils import knn_edge_maxpooling
 from utils.transforms import serialization
 from utils.transforms import deserialization
 from mamba_layer import Mamba2Block
+import random
 
 
 
@@ -214,11 +215,14 @@ class Stage(nn.Module):
         # # # 1) Position Embedding
         # xyz = self.pos_emb(xyz)  # xyz: [sum_i Ni, C]
         # x_flat = x_flat + xyz  # add positional embedding to features
+        possible_orders = self.order if isinstance(self.order, list) else [self.order]
+        chosen_order = random.choice(possible_orders)
+
 
         
         # 2) Serialization
         xyz_flat, x_flat, _, inverse_order = serialization(
-            xyz_flat, x_flat, order=self.order, pts=pts, grid_size=self.grid_size
+            xyz_flat, x_flat, order=chosen_order, pts=pts, grid_size=self.grid_size
         )
         # 3) Mamba2 Block
         u_out, res = self.mamba2_block(
