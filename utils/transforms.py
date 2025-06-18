@@ -1,59 +1,69 @@
 import torch
 from .serialization import Point
+from itertools import accumulate
+from torch import Tensor
+from typing import List, Optional, Tuple
 
 
-def serialization(pos, feat, x_res=None, order="z", layers_outputs=[], grid_size=0.02):
-    bs, n_p, _ = pos.size()  # (batch_size, num_points, 3)
+
+
+def serialization(xyz, feat, x_res=None, order="z", pts=None, layers_outputs=[], grid_size=0.02):
     if not isinstance(order, list):
         order = [order]
 
-    # Voxilize Points and normalize coordinates
-    scaled_coord = pos / grid_size
-    grid_coord = torch.floor(scaled_coord).to(torch.int64)
-    min_coord = grid_coord.min(dim=1, keepdim=True)[0]
-    grid_coord = grid_coord - min_coord
+    offset = torch.tensor([0] + list(accumulate(pts)), dtype=torch.long, device=xyz.device)
 
-    batch_idx = torch.arange(0, pos.shape[0], 1.0).unsqueeze(1).repeat(1, pos.shape[1]).to(torch.int64).to(pos.device)
-
-    point_dict = {'batch': batch_idx.flatten(), 'grid_coord': grid_coord.flatten(0, 1), }
+    # Baue Pointcept Point Objekt
+    # Ausreichende Attribute damit Pointcept den Rest berechnet
+    point_dict = {'offset': offset, 'coord': xyz, 'grid_size': grid_size}
     point_dict = Point(**point_dict)
     point_dict.serialization(order=order)
 
     order = point_dict.serialized_order
     inverse_order = point_dict.serialized_inverse
 
-    pos = pos.flatten(0, 1)[order].reshape(bs, n_p, -1).contiguous()
-    feat = feat.flatten(0, 1)[order].reshape(bs, n_p, -1).contiguous()
+    # Permutiere alle Flach-Tensoren direkt:
+    xyz = xyz[order]
+    feat = feat[order]
+
     if x_res is not None:
-        x_res = x_res.flatten(0, 1)[order].reshape(bs, n_p, -1).contiguous()
+        x_res = x_res[order]
 
     for i in range(len(layers_outputs)):
-        layers_outputs[i] = layers_outputs[i].flatten(0, 1)[order].reshape(bs, n_p, -1).contiguous()
-    return pos, feat, x_res
+        layers_outputs[i] = layers_outputs[i][order]
+    return xyz, feat, x_res, inverse_order
 
-def deserialization(pos, feat, x_res=None, layers_outputs=None, inverse_order=None):
+def deserialization(
+    xyz_ser: Tensor,
+    feat_ser: Tensor,
+    x_res_ser: Optional[Tensor],
+    inverse_order: Tensor,
+    layers_outputs_ser: Optional[List[Tensor]] = None
+) -> Tuple[Tensor, Tensor, Optional[Tensor], Optional[List[Tensor]]]:
     """
-    Revertiert die Permutation, die in `serialization` durch order erzeugt wurde.
+    Revertiere eine Flat-Serialization (P, C) mithilfe von inverse_order.
+    
     Args:
-      pos, feat, x_res: Tensor [B, N, C] im serialisierten (permute-)Zustand
-      layers_outputs: Liste von Tensoren gleicher Form (optional)
-      inverse_order: LongTensor [B*N] mit Rückpermute-Indizes
+        xyz_ser:            Tensor [P, C] (serialisiert)
+        feat_ser:           Tensor [P, C] (serialisiert)
+        x_res_ser:          Optional[Tensor [P, C]] (serialisiert)
+        inverse_order:      LongTensor [P] – Index-Mapping zurück zur Originalreihenfolge
+        layers_outputs_ser: Optional[List[Tensor [P, C]]] – serialisierte Layer-Outputs
+
     Returns:
-      pos, feat, x_res, layers_outputs jeweils in Original-Reihenfolge
+        xyz:           Tensor [P, C] in Originalreihenfolge
+        feat:          Tensor [P, C] in Originalreihenfolge
+        x_res:         Optional[Tensor [P, C]] in Originalreihenfolge
+        layers_outputs: Optional[List[Tensor [P, C]]] in Originalreihenfolge
     """
-    bs, n_p, _ = pos.size()
-    # flach machen, permuten, dann neu formen
-    def unpermute(tensor):
-        flat = tensor.flatten(0, 1)        # [B*N, C]
-        unflat = flat[inverse_order]       # zurück in Original-Index
-        return unflat.view(bs, n_p, -1).contiguous()
+    # 1) Gather zurück in Originalreihenfolge
+    xyz    = xyz_ser[inverse_order]
+    feat   = feat_ser[inverse_order]
+    x_res  = x_res_ser[inverse_order] if x_res_ser is not None else None
 
-    pos     = unpermute(pos)
-    feat    = unpermute(feat)
-    x_res   = unpermute(x_res)   if x_res   is not None else None
+    # 2) Falls vorhanden, jedes Layer-Output ebenfalls zurückpermuten
+    if layers_outputs_ser is not None:
+        for i, lo in enumerate(layers_outputs_ser):
+            layers_outputs_ser[i] = lo[inverse_order]
 
-    if layers_outputs is not None:
-        for i, lo in enumerate(layers_outputs):
-            layers_outputs[i] = unpermute(lo)
-
-    return pos, feat, x_res, layers_outputs
+    return xyz, feat, x_res, layers_outputs_ser

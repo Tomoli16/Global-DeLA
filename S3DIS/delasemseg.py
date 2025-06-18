@@ -206,23 +206,28 @@ class Stage(nn.Module):
         return x
 
     # Übernimmt das orchestrieren der Mamba2-Block-Operationen
-    def mamba2_aggregation(self, x_flat, xyz, pts, inference_params=None):
+    def mamba2_aggregation(self, x_flat, xyz_flat, pts, inference_params=None):
         """
         x_flat: Tensor [sum_i Ni, C]  (flattened batch of all scenes)
         pts:    Tensor [B]           (#Points per scene)
         """
-        # # 1) Position Embedding
-        xyz = self.pos_emb(xyz)  # xyz: [sum_i Ni, C]
-        x_flat = x_flat + xyz  # add positional embedding to features
+        # # # 1) Position Embedding
+        # xyz = self.pos_emb(xyz)  # xyz: [sum_i Ni, C]
+        # x_flat = x_flat + xyz  # add positional embedding to features
 
         # 2) Serialization
-
-    
-        # 2) Mamba2 Block
+        xyz_flat, x_flat, _, inverse_order = serialization(
+            xyz_flat, x_flat, order=self.order, pts=pts, grid_size=self.grid_size
+        )
+        # 3) Mamba2 Block
         u_out, res = self.mamba2_block(
             x_flat,
             pts=pts,
             inference_params=inference_params
+        )
+        # 4) Deserialization
+        u_out, res = deserialization(
+            u_out, res, inverse_order=inverse_order, pts=pts
         )
 
         return u_out, res
