@@ -215,6 +215,7 @@ class Stage(nn.Module):
         # xyz = self.pos_emb(xyz)  # xyz: [sum_i Ni, C]
         # x_flat = x_flat + xyz  # add positional embedding to features
 
+        
         # 2) Serialization
         xyz_flat, x_flat, _, inverse_order = serialization(
             xyz_flat, x_flat, order=self.order, pts=pts, grid_size=self.grid_size
@@ -226,8 +227,12 @@ class Stage(nn.Module):
             inference_params=inference_params
         )
         # 4) Deserialization
-        u_out, res = deserialization(
-            u_out, res, inverse_order=inverse_order, pts=pts
+        xyz_flat, u_out, res, _ = deserialization(
+            xyz_ser=xyz_flat,
+            feat_ser=u_out,
+            x_res_ser=res,
+            inverse_order=inverse_order,
+            layers_outputs_ser=None  # Mamba2 Block does not return additional outputs
         )
 
         return u_out, res
@@ -237,8 +242,15 @@ class Stage(nn.Module):
         """
         x: N x C
         """
+        # Debugging pts_list
+        # if pts_list is not None:
+        #     print(f"pts_list: {pts_list}")
+        #     print(f"Anzahl Szenen in pts_list: {len(pts_list)}")
+        #     for i, pts in enumerate(pts_list):
+        #         print(f"Stage {i}: {pts} Punkte")
+
         # ganz oben in Deiner forward(...)
-        pts0 = pts_list[0]
+        pts0 = pts_list[-1]
         
         # downsampling
         if not self.first:

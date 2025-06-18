@@ -17,10 +17,17 @@ def serialization(xyz, feat, x_res=None, order="z", pts=None, layers_outputs=[],
     # Ausreichende Attribute damit Pointcept den Rest berechnet
     point_dict = {'offset': offset, 'coord': xyz, 'grid_size': grid_size}
     point_dict = Point(**point_dict)
+
+    # print("coord:", xyz.shape)           # sollte [P, 3] sein
+    # print("offset:", offset.shape)       # sollte [B+1] sein
+    # point = Point(coord=xyz, offset=offset, grid_size=0.02)
+    # print("batch:", point["batch"].shape)         # sollte [P]
+    # print("grid_coord:", point["grid_coord"].shape)  # sollte [P, 3]
+
     point_dict.serialization(order=order)
 
-    order = point_dict.serialized_order
-    inverse_order = point_dict.serialized_inverse
+    order = point_dict.serialized_order.squeeze(0)       # (P,)
+    inverse_order = point_dict.serialized_inverse.squeeze(0)   # (P,)
 
     # Permutiere alle Flach-Tensoren direkt:
     xyz = xyz[order]

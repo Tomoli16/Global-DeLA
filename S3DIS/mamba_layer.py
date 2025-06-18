@@ -121,7 +121,7 @@ class Mamba2Block(nn.Module):
             device=u.device
         )
         seq_idx = None
-            # Mamba2 forward
+        # Mamba2 forward
         u_out = self.mamba2(
             u,
             seq_idx=seq_idx,
