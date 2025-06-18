@@ -211,9 +211,9 @@ class Stage(nn.Module):
         x_flat: Tensor [sum_i Ni, C]  (flattened batch of all scenes)
         pts:    Tensor [B]           (#Points per scene)
         """
-        # # 1) Position Embedding
-        xyz = self.pos_emb(xyz)  # xyz: [sum_i Ni, C]
-        x_flat = x_flat + xyz  # add positional embedding to features
+        # # # 1) Position Embedding
+        # xyz = self.pos_emb(xyz)  # xyz: [sum_i Ni, C]
+        # x_flat = x_flat + xyz  # add positional embedding to features
 
         # 2) Serialization
 
