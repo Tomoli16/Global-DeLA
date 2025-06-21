@@ -246,26 +246,6 @@ class Stage(nn.Module):
         possible_orders = self.order if isinstance(self.order, list) else [self.order]
         chosen_order = random.choice(possible_orders)
 
-        # # 1) Serialisieren
-        # xyz_ser, feat_ser, x_res_ser, inv_order = serialization(
-        #     xyz_flat, x_flat, x_res=x_flat,
-        #     order=chosen_order, pts=pts, grid_size=self.grid_size
-        # )
-
-        # # 2) Deserialisieren
-        # xyz_back, feat_back, x_res_back, layers_back = deserialization(
-        #     xyz_ser, feat_ser, x_res_ser,
-        #     inv_order
-        # )
-
-        # # 3) Assertions
-        # assert torch.allclose(xyz_flat, xyz_back), \
-        #     f"xyz mismatch: max diff = {(xyz_flat - xyz_back).abs().max():.3e}"
-
-        # assert torch.allclose(x_flat, feat_back), \
-        #     f"feat mismatch: max diff = {(x_flat - feat_back).abs().max():.3e}"
-
-        
         # 2) Serialization
         xyz_flat, x_flat, _, inverse_order = serialization(
             xyz_flat, x_flat, order=chosen_order, pts=pts, grid_size=self.grid_size
