@@ -118,7 +118,7 @@ def batch2offset(batch):
 def encode(grid_coord, batch=None, depth=16, order="z"):
     if order in {"xyz", "xzy", "yxz", "yzx", "zxy", "zyx"}:
         return encode_cts(grid_coord, batch, depth, order)
-    assert order in {"z", "z-trans", "hilbert", "hilbert-trans"}
+    assert order in {"z", "z-trans", "hilbert", "hilbert-trans", "random"}
     if order == "z":
         code = z_order_encode(grid_coord, depth=depth)
     elif order == "z-trans":
@@ -127,6 +127,9 @@ def encode(grid_coord, batch=None, depth=16, order="z"):
         code = hilbert_encode(grid_coord, depth=depth)
     elif order == "hilbert-trans":
         code = hilbert_encode(grid_coord[:, [1, 0, 2]], depth=depth)
+    elif order == "random":
+        n = grid_coord.size(0)
+        code = torch.randperm(n, device=grid_coord.device, dtype=torch.long)
     else:
         raise NotImplementedError
     if batch is not None:
