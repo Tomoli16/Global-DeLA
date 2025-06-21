@@ -21,7 +21,7 @@ s3dis_args = SimpleNamespace()
 s3dis_args.k = [24, 24, 24, 24]
 s3dis_args.grid_size = [0.04, 0.08, 0.16, 0.32]
 
-s3dis_args.max_pts = 30000
+s3dis_args.max_pts = 100000
 
 s3dis_warmup_args = deepcopy(s3dis_args)
 s3dis_warmup_args.grid_size = [0.04, 3.5, 3.5, 3.5]
