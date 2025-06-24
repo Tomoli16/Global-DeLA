@@ -20,7 +20,7 @@ def checkpoint(function, *args, **kwargs):
     return torch_checkpoint(function, *args, use_reentrant=False, **kwargs)
 
 
-
+# Andert nichts an der Reihenfolge der Punkte
 class LFP(nn.Module):
     r"""
     Local Feature Propagation Layer
@@ -232,28 +232,28 @@ class Stage(nn.Module):
         """
         x: N x C
         """
-        # ganz oben in Deiner forward(...)
+        # Durch pop steht hier immer Punktanzahl für das aktuelle Level
         pts0 = pts_list[0]
         
         # downsampling
         if not self.first:
             ids = indices.pop()
             xyz = xyz[ids]
-            x = self.skip_proj(x)[ids] + self.lfp(x.unsqueeze(0), prev_knn).squeeze(0)[ids]
+            x = self.skip_proj(x)[ids] + self.lfp(x.unsqueeze(0), prev_knn).squeeze(0)[ids] # LFP + 1x1 Conv
 
         knn = indices.pop()
         
         # spatial encoding
         N, k = knn.shape    # jeder der N Punkte hat an Stelle knn[i] die Indizes der k nächsten Nachbarn
-        nbr = xyz[knn] - xyz.unsqueeze(1)   # xyz[knn] # N x k x 3 xyz.unsqueeze(1) # N x 1 x 3
-        nbr = torch.cat([nbr, x[knn]], dim=-1).view(-1, 7) if self.first else nbr.view(-1, 3)
+        nbr = xyz[knn] - xyz.unsqueeze(1)   # xyz[knn] # N x k x 3 xyz.unsqueeze(1) # N x 1 x 3, ergibt relative Koordinaten (dx, dy, dz)
+        nbr = torch.cat([nbr, x[knn]], dim=-1).view(-1, 7) if self.first else nbr.view(-1, 3) # # N x k x 7, wenn first, sonst N x k x 3, hängt an (dx, dy, dz) jeweils die Nachbarfeatures an
         if self.training and self.cp:
             nbr.requires_grad_()
         nbr_embed_func = lambda x: self.nbr_embed(x).view(N, k, -1).max(dim=1)[0]   # Pro Punkt, pro Feature, max über die k Nachbarn, N x k x C -> N x C
         nbr = checkpoint(nbr_embed_func, nbr) if self.training and self.cp else nbr_embed_func(nbr)
         nbr = self.nbr_proj(nbr)
         nbr = self.nbr_bn(nbr)
-        x = nbr if self.first else nbr + x
+        x = nbr if self.first else nbr + x  # res connection
 
         # Local aggregation block
         knn = knn.unsqueeze(0)
@@ -263,7 +263,6 @@ class Stage(nn.Module):
 
         # Mamba2 aggregation
         x, _ = self.mamba2_aggregation(x, xyz, pts0)
-
 
 
 

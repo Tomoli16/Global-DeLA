@@ -107,6 +107,12 @@ class S3DIS(Dataset):
         height = xyz[:, 2:]
         feature = torch.cat([col, height], dim=1)
 
+        # Teste Auswirkung von rand Permutation
+        perm = torch.randperm(xyz.size(0), device=xyz.device)
+        xyz     = xyz[perm]
+        feature = feature[perm]
+        lbl     = lbl[perm]
+
         indices = []
         self.knn(xyz, self.grid_size[::-1], self.k[::-1], indices)
 
