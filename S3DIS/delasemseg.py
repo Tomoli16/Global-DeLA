@@ -259,10 +259,12 @@ class Stage(nn.Module):
         knn = knn.unsqueeze(0)
         pts = pts_list.pop() if pts_list is not None else None
 
+        x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
+
         # Mamba2 aggregation
         x, _ = self.mamba2_aggregation(x, xyz, pts0)
 
-        x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
+
 
 
         
