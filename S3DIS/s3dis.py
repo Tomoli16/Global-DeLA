@@ -82,7 +82,10 @@ class S3DIS(Dataset):
 
         if xyz.shape[0] > self.max_pts and self.train:
             pt = random.choice(xyz)
-            condition = (xyz - pt).square().sum(dim=1).argsort()[:self.max_pts].sort()[0]  # sort to preserve locality
+            # 1) wähle die max_pts nächsten Punkte um ein zufälliges Zentrum pt
+            sel = (xyz - pt).square().sum(1).argsort()[:self.max_pts]
+            # 2) sortiere diese sel-Indizes numerisch aufsteigend
+            condition = sel.sort()[0]
             xyz = xyz[condition]
             indices = indices[condition]
         
