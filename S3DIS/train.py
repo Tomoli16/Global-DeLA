@@ -71,8 +71,8 @@ print(len(traindlr))
 
 step_per_epoch = len(traindlr)
 
-# model = DelaSemSeg(dela_args).cuda()
-model = GridSSMamba(dela_args).cuda()
+model = DelaSemSeg(dela_args).cuda()
+# model = GridSSMamba(dela_args).cuda()
 
 optimizer = create_optimizer_v2(model, lr=lr, weight_decay=5e-2)
 scheduler = CosineLRScheduler(optimizer, t_initial = epoch * step_per_epoch, lr_min = lr/10000,
