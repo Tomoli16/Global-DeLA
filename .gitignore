@@ -20,4 +20,5 @@ wandb-debug.log
 *.err
 
 S3DIS/output/model/
+S3DIS/output/visualizations/outputs/
 
