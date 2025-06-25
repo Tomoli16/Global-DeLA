@@ -12,6 +12,7 @@ from utils.timm.scheduler.cosine_lr import CosineLRScheduler
 from utils.timm.optim import create_optimizer_v2
 import utils.util as util
 from delasemseg import DelaSemSeg
+from gridssmamba import GridSSMamba
 from time import time, sleep
 from config import s3dis_args, s3dis_warmup_args, dela_args, batch_size, learning_rate as lr, epoch, warmup, label_smoothing as ls
 import wandb
@@ -70,7 +71,8 @@ print(len(traindlr))
 
 step_per_epoch = len(traindlr)
 
-model = DelaSemSeg(dela_args).cuda()
+# model = DelaSemSeg(dela_args).cuda()
+model = GridSSMamba(dela_args).cuda()
 
 optimizer = create_optimizer_v2(model, lr=lr, weight_decay=5e-2)
 scheduler = CosineLRScheduler(optimizer, t_initial = epoch * step_per_epoch, lr_min = lr/10000,

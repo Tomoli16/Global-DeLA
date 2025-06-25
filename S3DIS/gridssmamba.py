@@ -79,14 +79,12 @@ class Stage(nn.Module):
 
         if not first:
             in_dim = args.dims[depth - 1]
-            self.lfp = LFP(in_dim, dim, args.bn_momentum, 0.3)
             self.skip_proj = nn.Sequential(
                 nn.Linear(in_dim, dim, bias=False),
                 nn.BatchNorm1d(dim, momentum=args.bn_momentum)
             )
             nn.init.constant_(self.skip_proj[1].weight, 0.3)
 
-        self.blk = Block(dim, args.depths[depth], args.drop_paths[depth], args.mlp_ratio, cp_bn_momentum, args.act)
         self.drop = DropPath(args.head_drops[depth])
         self.postproj = nn.Sequential(
             nn.BatchNorm1d(dim, momentum=args.bn_momentum),
@@ -107,11 +105,7 @@ class Stage(nn.Module):
 
         self.mamba2_block = Mamba2Block(dim, depth)
     
-    def local_aggregation(self, x, knn, pts):
-        x = x.unsqueeze(0)  # N x C -> 1 x N x C
-        x = self.blk(x, knn, pts)
-        x = x.squeeze(0) # 1 x N x C -> N x C
-        return x
+
 
     # Übernimmt das orchestrieren der Mamba2-Block-Operationen
     def mamba2_aggregation(self, x_flat, xyz, pts, inference_params=None):
@@ -147,14 +141,15 @@ class Stage(nn.Module):
         if not self.first:
             ids = indices.pop()
             xyz = xyz[ids]
-            x = self.skip_proj(x)[ids] + self.lfp(x.unsqueeze(0), prev_knn).squeeze(0)[ids] # LFP + 1x1 Conv
+            x = self.skip_proj(x)[ids]
 
         knn = indices.pop()
         
+
         # spatial encoding
         N, k = knn.shape    # jeder der N Punkte hat an Stelle knn[i] die Indizes der k nächsten Nachbarn
         nbr = xyz[knn] - xyz.unsqueeze(1)   # xyz[knn] # N x k x 3 xyz.unsqueeze(1) # N x 1 x 3, ergibt relative Koordinaten (dx, dy, dz)
-        nbr = torch.cat([nbr, x[knn]], dim=-1).view(-1, 7) if self.first else nbr.view(-1, 3) # # N x k x 7, wenn first, sonst N x k x 3, hängt an (dx, dy, dz) jeweils die Nachbarfeatures an
+        nbr = torch.cat([nbr, x[knn]], dim=-1).view(-1, 7) if self.first else nbr.view(-1, 3) #  N x k x 7, wenn first, sonst N x k x 3, hängt an (dx, dy, dz) jeweils die Nachbarfeatures an
         if self.training and self.cp:
             nbr.requires_grad_()
         nbr_embed_func = lambda x: self.nbr_embed(x).view(N, k, -1).max(dim=1)[0]   # Pro Punkt, pro Feature, max über die k Nachbarn, N x k x C -> N x C
@@ -166,8 +161,6 @@ class Stage(nn.Module):
         # Local aggregation block
         knn = knn.unsqueeze(0)
         pts = pts_list.pop() if pts_list is not None else None
-
-        x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
 
         # Mamba2 aggregation
         x, _ = self.mamba2_aggregation(x, xyz, pts0)
@@ -205,7 +198,7 @@ class Stage(nn.Module):
 
         return sub_x, sub_c
 
-class DelaSemSeg(nn.Module):
+class GridSSMamba(nn.Module):
     r"""
     DeLA for Semantic Segmentation  
 
