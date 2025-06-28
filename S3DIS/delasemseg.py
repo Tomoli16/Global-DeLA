@@ -116,16 +116,24 @@ class Block(nn.Module):
         self.drop_paths = nn.ModuleList([
             DropPath(dpr) for dpr in drop_rates
         ])
+        self.mamba2_block = Mamba2Block(dim, depth)
     
     def drop_path(self, x, i, pts):
         if not self.dp[i] or not self.training:
             return x
         return torch.cat([self.drop_paths[i](xx) for xx in torch.split(x, pts, dim=1)], dim=1)
 
-    def forward(self, x, knn, pts=None):
+    def forward(self, x, knn, pts=None, pts0=None):
         x = x + self.drop_path(self.mlp(x), 0, pts)
         for i in range(self.depth):
             x = x + self.drop_path(self.lfps[i](x, knn), i, pts)
+            x_res = x
+            x, _ = self.mamba2_block(
+                x,
+                pts=pts0,
+                inference_params=None
+            )
+            x = x + x_res
             if i % 2 == 1:
                 x = x + self.drop_path(self.mlps[i // 2](x), i, pts)
         return x
@@ -199,9 +207,9 @@ class Stage(nn.Module):
 
         self.mamba2_block = Mamba2Block(dim, depth)
     
-    def local_aggregation(self, x, knn, pts):
+    def local_aggregation(self, x, knn, pts, pts0):
         x = x.unsqueeze(0)  # N x C -> 1 x N x C
-        x = self.blk(x, knn, pts)
+        x = self.blk(x, knn, pts, pts0) 
         x = x.squeeze(0) # 1 x N x C -> N x C
         return x
 
@@ -259,10 +267,10 @@ class Stage(nn.Module):
         knn = knn.unsqueeze(0)
         pts = pts_list.pop() if pts_list is not None else None
 
-        x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
+        x = checkpoint(self.local_aggregation, x, knn, pts, pts0) if self.training and self.cp else self.local_aggregation(x, knn, pts, pts0)
 
         # Mamba2 aggregation
-        x, _ = self.mamba2_aggregation(x, xyz, pts0)
+        # x, _ = self.mamba2_aggregation(x, xyz, pts0)
 
 
 

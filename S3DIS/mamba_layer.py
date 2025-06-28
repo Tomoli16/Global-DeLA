@@ -115,7 +115,8 @@ class Mamba2Block(nn.Module):
                     eps=self.norm.eps,
                 )
 
-        u = x.unsqueeze(0) 
+        # u = x.unsqueeze(0) 
+        u = x
         cu_seqlens = build_cu_seqlens(
             pts if pts is not None else [x.size(1)] * x.size(0),
             device=u.device
@@ -128,10 +129,11 @@ class Mamba2Block(nn.Module):
             cu_seqlens=cu_seqlens,
             inference_params=inference_params
         )
+        out = u_out
 
 
         
-        out = u_out.squeeze(0)  # [B, L, C] or [sum(Ni), C]
+        # out = u_out.squeeze(0)  # [B, L, C] or [sum(Ni), C]
 
         return out, residual
 
