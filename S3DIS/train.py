@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).absolute().parent.parent))
 from utils.timm.scheduler.cosine_lr import CosineLRScheduler
 from utils.timm.optim import create_optimizer_v2
+from utils.ptv3_evaluator import SemSegEvaluator
 import utils.util as util
 from delasemseg import DelaSemSeg
 from gridssmamba import GridSSMamba
@@ -142,26 +143,25 @@ for i in range(start_epoch, epoch):
         step=i,
     )
 
-    model.eval()
     metric.reset()
-    with torch.no_grad():
-        for xyz, feature, indices, pts, y in testdlr:
-            xyz = xyz.cuda(non_blocking=True)
-            feature = feature.cuda(non_blocking=True)
-            indices = [ii.cuda(non_blocking=True).long() for ii in indices[::-1]]
-            pts = pts.tolist()[::-1]
-            y = y.cuda(non_blocking=True)
-            with autocast():
-                p = model(xyz, feature, indices, pts)
-            metric.update(p, y)
+
+
+            
+    evaluator = SemSegEvaluator(
+        model=model,
+        dataloader=testdlr,
+        num_classes=13,
+        ignore_index=100,
+    )
+
+    results = evaluator.evaluate() 
     
     
     
-    
-    metric.print("val:  ")
-    val_miou = metric.miou
-    val_macc = metric.macc
-    val_acc = metric.acc
+    # metric.print("val:  ")
+    val_miou = results["mIoU"]
+    val_macc = results["mAcc"]
+    val_acc = results["allAcc"]
     wandb.log({
         "epoch": i,
         "val_miou": val_miou,
@@ -169,7 +169,7 @@ for i in range(start_epoch, epoch):
         "val_acc": val_acc,
     }, step=i)
     print(f"duration: {time() - now}")
-    cur = metric.miou
+    cur = val_miou
     if best < cur:
         best = cur
         print("new best!")
