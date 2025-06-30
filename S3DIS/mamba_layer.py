@@ -121,7 +121,6 @@ class Mamba2Block(nn.Module):
             pts if pts is not None else [x.size(1)] * x.size(0),
             device=u.device
         )
-        print("u.shape:", u.shape)  # [B, L, C] or [sum(Ni), C]
         # Mamba2 forward
         u_out1 = self.mamba2(
             u,
