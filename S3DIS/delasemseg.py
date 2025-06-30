@@ -233,7 +233,8 @@ class Stage(nn.Module):
         x: N x C
         """
         # Durch pop steht hier immer Punktanzahl für das aktuelle Level
-        pts0 = pts_list[0]
+        # pts0 = pts_list[-1]
+        
         
         # downsampling
         if not self.first:
@@ -258,10 +259,10 @@ class Stage(nn.Module):
         # Local aggregation block
         knn = knn.unsqueeze(0)
         pts = pts_list.pop() if pts_list is not None else None
-        x = checkpoint(self.local_aggregation, x, knn, pts, pts0) if self.training and self.cp else self.local_aggregation(x, knn, pts, pts0)
+        x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
 
         # Mamba2 aggregation
-        x, _ = self.mamba2_aggregation(x, xyz, pts0)
+        x, _ = self.mamba2_aggregation(x, xyz, pts)
 
         # get subsequent feature maps (Rekursiver Aufruf)
         if not self.last:
