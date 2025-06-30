@@ -83,7 +83,8 @@ class Mamba2Block(nn.Module):
             residual=None, 
             inference_params=None,            
             seq_idx=None, 
-            cu_seqlens=None
+            cu_seqlens=None,
+            bidirectional=True
     ):
         # Pre-Norm + Residual
         if not self.fused:
@@ -120,16 +121,38 @@ class Mamba2Block(nn.Module):
             pts if pts is not None else [x.size(1)] * x.size(0),
             device=u.device
         )
-        seq_idx = None
-            # Mamba2 forward
-        u_out = self.mamba2(
+        # Mamba2 forward
+        u_out1 = self.mamba2(
             u,
             seq_idx=seq_idx,
             cu_seqlens=cu_seqlens,
             inference_params=inference_params
         )
+        if bidirectional:
+            # Reverse the input for backward pass
+            u_rev = u.clone()
+            for i in range(len(cu_seqlens)-1):
+                s, e = cu_seqlens[i].item(), cu_seqlens[i+1].item()
+                # u[:, s:e, :] hat Shape [B, length_i, C]
+                # flippt entlang der Time-Achse (Dim=1 in [B,L,C])
+                u_rev[:, s:e, :] = u[:, s:e, :].flip(1)
 
-
+            # Mamba2 backward pass
+            u_out_bwd_rev = self.mamba2(
+                u_rev,
+                seq_idx=seq_idx,
+                cu_seqlens=cu_seqlens,
+                inference_params=inference_params
+            )
+            # Reverse the output of the backward pass
+            u_out2 = torch.empty_like(u_out_bwd_rev)
+            for i in range(len(cu_seqlens)-1):
+                s, e = cu_seqlens[i].item(), cu_seqlens[i+1].item()
+                u_out2[:, s:e, :] = u_out_bwd_rev[:, s:e, :].flip(1)
+            # Combine the outputs from forward and backward passes
+            u_out = u_out1 + u_out2  
+        else:
+            u_out = u_out1
         
         out = u_out.squeeze(0)  # [B, L, C] or [sum(Ni), C]
 
