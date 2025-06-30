@@ -121,6 +121,7 @@ class Mamba2Block(nn.Module):
             pts if pts is not None else [x.size(1)] * x.size(0),
             device=u.device
         )
+        print("u.shape:", u.shape)  # [B, L, C] or [sum(Ni), C]
         # Mamba2 forward
         u_out1 = self.mamba2(
             u,
@@ -133,9 +134,17 @@ class Mamba2Block(nn.Module):
             u_rev = u.clone()
             for i in range(len(cu_seqlens)-1):
                 s, e = cu_seqlens[i].item(), cu_seqlens[i+1].item()
-                # u[:, s:e, :] hat Shape [B, length_i, C]
-                # flippt entlang der Time-Achse (Dim=1 in [B,L,C])
-                u_rev[:, s:e, :] = u[:, s:e, :].flip(1)
+                # print(f"[DEBUG] Szene {i}: slice von {s} bis {e}, Länge = {e-s}")
+                seg_before = u[0, s:e, 0].clone()  # Beispiel: erste Dimension, erster Feature-Kanal
+                # print("  before:", seg_before[:5], "...", seg_before[-5:])
+                
+                flipped = u[0, s:e, :].flip(0)     # hier war evtl. Achse vertauscht?
+                seg_after = flipped[:, 0]          # erstes Zeit-Element nach Flip
+                # print("  flipped first three elements:", seg_after[:3])
+                
+                u_rev[:, s:e, :] = flipped
+                # seg_rev = u_rev[0, s:e, 0]
+                # print("  in u_rev:", seg_rev[:5], "...", seg_rev[-5:])
 
             # Mamba2 backward pass
             u_out_bwd_rev = self.mamba2(
