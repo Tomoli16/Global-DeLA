@@ -73,7 +73,7 @@ class Mamba2Block(nn.Module):
             use_mem_eff_path=False,
             **mamba_kwargs,
         )
-        
+        self.out_project = nn.Linear(dim*2, dim)  # Output projection to match input dimension
 
 
     def forward(
@@ -158,7 +158,9 @@ class Mamba2Block(nn.Module):
                 s, e = cu_seqlens[i].item(), cu_seqlens[i+1].item()
                 u_out2[:, s:e, :] = u_out_bwd_rev[:, s:e, :].flip(1)
             # Combine the outputs from forward and backward passes
-            u_out = u_out1 + u_out2  
+            u_out = torch.cat([u_out1, u_out2], dim=2)  # [1, L, C*2]
+            u_out = self.out_project(u_out)  # [1, L, C]
+            
         else:
             u_out = u_out1
         
