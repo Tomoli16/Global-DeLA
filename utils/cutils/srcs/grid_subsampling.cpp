@@ -26,12 +26,15 @@ struct SlowHash
     {
         const uint64_t slow_idx = __uint128_t(key * multiplier) * size >> 64;
         Cell **cell = &table[slow_idx];
+        // Solange es einen Cell gibt und der Schlüssel nicht übereinstimmt
         for (; *cell && (*cell)->key != key; cell = &(*cell)->next);
+        // Am Ende zeigt entweder auf Zeiger auf Nullptr oder auf einen Zeiger auf eine Cell mit dem gleichen Schlüssel
+        // Auch hier Abfrage nach weight, wir wollen ja immer nur die stärkste Cell behalten
         if (*cell && (*cell)->weight >= weight)
             return;
         if (*cell == nullptr)
         {
-            *cell = storage + count;
+            *cell = storage + count; // Storage gibt uns Zeiger auf ersten freien Cell
             ++count;
             (*cell)->next = nullptr;
         }
@@ -40,6 +43,7 @@ struct SlowHash
         (*cell)->weight = weight;
     }
 
+    // Gibt die Indizes in der Reihenfolge wie sie in storage liegen zurück
     torch::Tensor finalize()
     {
         auto indices = torch::empty(count - 1, torch::kInt64);
@@ -73,6 +77,7 @@ struct FastHash
         const uint64_t fast_idx = key_ % hash_size;
         if (key[fast_idx] == key_)
         {
+            // gleichverteiltes Sampling (Reservior Sampling)
             uint32_t new_weight = running_weight[fast_idx] * (uint32_t)31 + (uint32_t)1857864947;
             if (new_weight > weight[fast_idx])
             {
@@ -88,6 +93,7 @@ struct FastHash
         }
     }
 
+    // Fügt restliche Einträge in den SlowHash ein
     void finalize()
     {
         for (uint64_t i = 0; i < hash_size; ++i)
@@ -104,8 +110,11 @@ torch::Tensor grid_subsampling(const torch::Tensor &pc_, const float grid_size_,
     FastHash<fast_hash_size> fast_hash(slow_hash);
     const uint64_t pc_size = pc_.size(0);
     const float *pc = (const float*)pc_.data_ptr();
+    // x_step und z_step sind Skalierungs bzw Mischfaktoren zur Vermeidung von Kollisionen und Abstimmung auf die Tabellen Größe
+    // Erhält räumliche Sortiereigenschaft
     const uint64_t x_step = ((1ull << 42) / slow_hash_size * slow_hash_size + uint64_t(slow_hash_size * 0.292135)) / fast_hash_size * fast_hash_size + 1913;
     const uint64_t z_step = ((1ull << 21) / slow_hash_size * slow_hash_size + uint64_t(slow_hash_size * 0.559518)) / fast_hash_size * fast_hash_size + 1187;
+    // Wandelt double in uint64_t um (Entspricht floor(x))
     const auto d2u = [](double x)
     {
         int64_t tmp = x;
@@ -113,6 +122,7 @@ torch::Tensor grid_subsampling(const torch::Tensor &pc_, const float grid_size_,
     };
     for (uint64_t i = 0; i < pc_size; ++i)
     {
+        // Berechne Bitkey der 3d Voxel Koordinate eindeutig repräsentiert
         const uint64_t key = (d2u(pc[i*3]*grid_size) * x_step) + (d2u(pc[i*3 + 1]*grid_size)) + (d2u(pc[i*3 + 2]*grid_size) * z_step);
         fast_hash.insert(key, i);
     }
