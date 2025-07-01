@@ -222,7 +222,8 @@ class Stage(nn.Module):
         u_out, res = self.mamba2_block(
             x_flat,
             pts=pts,
-            inference_params=inference_params
+            inference_params=inference_params,
+            bidirectional=True,
         )
 
         return u_out, res

@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 
-sys.path.append(str(Path(__file__).absolute().parent.parent))
+sys.path.append(str(Path(__file__).absolute().parent.parent.parent.parent))
 from utils.cutils import grid_subsampling
 from utils.transforms import serialization
 
@@ -22,20 +22,20 @@ sub_xyz   = xyz[indices]
 # sub_xyz   = sub_xyz[torch.randperm(sub_xyz.shape[0])]
 
 
-# --- 3) Flatten für die Serialization ---
-xyz_flat = sub_xyz.unsqueeze(0)                # (N,3)
-x_flat   = sub_xyz.clone().unsqueeze(0)        # Features; hier einfach die Koordinaten
-pts      = [sub_xyz.shape[0]]     # Liste mit der Punktzahl der Szene
+# # --- 3) Flatten für die Serialization ---
+# xyz_flat = sub_xyz.unsqueeze(0)                # (N,3)
+# x_flat   = sub_xyz.clone().unsqueeze(0)        # Features; hier einfach die Koordinaten
+# pts      = [sub_xyz.shape[0]]     # Liste mit der Punktzahl der Szene
 
-# --- 4) Serialisierung aufrufen ---
-#    inverse_order gibt für jeden Punkt den Serialisierungs-Index
-sub_xyz, x_ser, _ = serialization(
-    xyz_flat,
-    x_flat,
-    order="hilbert",        # z-Raster-Reihenfolge
-    grid_size=grid_size
-)
-sub_xyz = sub_xyz.squeeze(0)  # zurück zu (N,3)
+# # --- 4) Serialisierung aufrufen ---
+# #    inverse_order gibt für jeden Punkt den Serialisierungs-Index
+# sub_xyz, x_ser, _ = serialization(
+#     xyz_flat,
+#     x_flat,
+#     order="hilbert",        # z-Raster-Reihenfolge
+#     grid_size=grid_size
+# )
+# sub_xyz = sub_xyz.squeeze(0)  # zurück zu (N,3)
 
 
 # --- 3) Farbverlauf nach Einfüge-Index ---
@@ -73,6 +73,6 @@ fig.update_layout(
 )
 
 # Als HTML speichern
-output_path = "interactive_subsample_random.html"
+output_path = "interactive_grid_subsampling.html"
 fig.write_html(output_path, include_plotlyjs='cdn')
 print(f"Interaktive 3D-Ansicht gespeichert unter {output_path}")
