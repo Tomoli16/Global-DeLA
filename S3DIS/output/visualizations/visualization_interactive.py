@@ -12,30 +12,34 @@ from utils.transforms import serialization
 # --- 1) Sample laden ---
 xyz, col, lbl = torch.load("data/s3dis/1_hallway_1.pt")
 
+# random permutation der Indizes für die Visualisierung
+xyz = xyz[torch.randperm(xyz.shape[0])]
+
 # --- 2) Subsample ---
-grid_size = 0.04
-ratio     = 2.5 / 14
-indices   = grid_subsampling(xyz, grid_size, ratio)
-sub_xyz   = xyz[indices]
+subsample = True 
+if subsample:
+    grid_size = 0.04
+    ratio     = 2.5 / 14
+    indices   = grid_subsampling(xyz, grid_size, ratio)
+    sub_xyz   = xyz[indices]
+else:
+    sub_xyz = xyz
 
-# # Random permutation der Indizes für die Visualisierung
-# sub_xyz   = sub_xyz[torch.randperm(sub_xyz.shape[0])]
+
+xyz_flat = sub_xyz.unsqueeze(0)
+# Für feat einfach xyz_flat verwenden, da keine Features vorhanden sind
+x_flat   = xyz_flat.clone()  
 
 
-# # --- 3) Flatten für die Serialization ---
-# xyz_flat = sub_xyz.unsqueeze(0)                # (N,3)
-# x_flat   = sub_xyz.clone().unsqueeze(0)        # Features; hier einfach die Koordinaten
-# pts      = [sub_xyz.shape[0]]     # Liste mit der Punktzahl der Szene
-
-# # --- 4) Serialisierung aufrufen ---
-# #    inverse_order gibt für jeden Punkt den Serialisierungs-Index
-# sub_xyz, x_ser, _ = serialization(
-#     xyz_flat,
-#     x_flat,
-#     order="hilbert",        # z-Raster-Reihenfolge
-#     grid_size=grid_size
-# )
-# sub_xyz = sub_xyz.squeeze(0)  # zurück zu (N,3)
+# --- 4) Serialisierung aufrufen ---
+#    inverse_order gibt für jeden Punkt den Serialisierungs-Index
+sub_xyz, x_ser, _ = serialization(
+    xyz_flat,
+    x_flat,
+    order="hilbert",        # z-Raster-Reihenfolge
+    grid_size=0.04
+)
+sub_xyz = sub_xyz.squeeze(0)  # zurück zu (N,3)
 
 
 # --- 3) Farbverlauf nach Einfüge-Index ---
@@ -73,6 +77,6 @@ fig.update_layout(
 )
 
 # Als HTML speichern
-output_path = "interactive_grid_subsampling.html"
+output_path = "random_subss_ser.html"
 fig.write_html(output_path, include_plotlyjs='cdn')
 print(f"Interaktive 3D-Ansicht gespeichert unter {output_path}")

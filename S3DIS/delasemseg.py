@@ -223,7 +223,7 @@ class Stage(nn.Module):
             x_flat,
             pts=pts,
             inference_params=inference_params,
-            bidirectional=True,
+            bidirectional=False,
         )
 
         return u_out, res
