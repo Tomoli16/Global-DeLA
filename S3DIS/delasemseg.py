@@ -241,7 +241,7 @@ class Stage(nn.Module):
         x: N x C
         """
         # Durch pop steht hier immer Punktanzahl für das aktuelle Level
-        pts0 = pts_list[0]
+        pts0 = pts_list[-1]
         
         # downsampling
         if not self.first:
