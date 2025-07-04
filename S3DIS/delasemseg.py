@@ -5,6 +5,7 @@ from torch.utils.checkpoint import checkpoint as torch_checkpoint
 from torch.nn.init import trunc_normal_
 import sys
 from pathlib import Path
+import random
 sys.path.append(str(Path(__file__).absolute().parent.parent))
 from utils.timm.models.layers import DropPath
 from utils.cutils import knn_edge_maxpooling
@@ -95,7 +96,7 @@ class Mlp(nn.Module):
         return x
 
 class Block(nn.Module):
-    def __init__(self, dim, depth, drop_path, mlp_ratio, bn_momentum, act):
+    def __init__(self, dim, depth, drop_path, mlp_ratio, bn_momentum, act, args, grid_size=0.04):
         super().__init__()
 
         self.depth = depth
@@ -117,23 +118,45 @@ class Block(nn.Module):
             DropPath(dpr) for dpr in drop_rates
         ])
         self.mamba2_block = Mamba2Block(dim, depth)
+        self.grid_size = grid_size
+        self.order = args.order
     
     def drop_path(self, x, i, pts):
         if not self.dp[i] or not self.training:
             return x
         return torch.cat([self.drop_paths[i](xx) for xx in torch.split(x, pts, dim=1)], dim=1)
 
-    def forward(self, x, knn, pts=None, pts0=None):
+    def forward(self, x, xyz, knn, pts=None, pts0=None):
         x = x + self.drop_path(self.mlp(x), 0, pts)
         for i in range(self.depth):
             x = x + self.drop_path(self.lfps[i](x, knn), i, pts)
-            x_res = x
-            x, _ = self.mamba2_block(
+            possible_orders = self.order if isinstance(self.order, list) else [self.order]
+            chosen_order = random.choice(possible_orders)
+
+            # 1) Flatten x, xyz is already flat
+            x = x.squeeze(0)
+
+            # 2) Serialization
+            xyz, x, _, inverse_order = serialization(
+                xyz, x, order=chosen_order, pts=pts0, grid_size=self.grid_size
+            )
+            # 3) Mamba2 Block
+            x, x_res = self.mamba2_block(
                 x,
                 pts=pts0,
                 inference_params=None
             )
-            x = x + x_res
+            x = x_res + self.drop_path(x, i, pts)
+            x = x.squeeze(0)  # [B, L, C] or [sum(Ni), C]
+            # 4) Deserialization
+            xyz, x, res, _ = deserialization(
+                xyz_ser=xyz,
+                feat_ser=x,
+                x_res_ser=x_res,
+                inverse_order=inverse_order,
+                layers_outputs_ser=None
+            )
+            x = x.unsqueeze(0)  # N x C -> 1 x N x C
             if i % 2 == 1:
                 x = x + self.drop_path(self.mlps[i // 2](x), i, pts)
         return x
@@ -152,8 +175,7 @@ class Stage(nn.Module):
         self.k = args.ks[depth]
         dim = args.dims[depth]
 
-        self.grid_size = args.grid_size[depth]  # grid size for serialization
-        self.order = args.order
+
         self.pos_emb = PosEmbedder(in_dim=3, embed_dim=dim, hidden_dim=dim, act=args.act, bn_momentum=args.bn_momentum)
 
 
@@ -185,8 +207,8 @@ class Stage(nn.Module):
                 nn.BatchNorm1d(dim, momentum=args.bn_momentum)
             )
             nn.init.constant_(self.skip_proj[1].weight, 0.3)
-
-        self.blk = Block(dim, args.depths[depth], args.drop_paths[depth], args.mlp_ratio, cp_bn_momentum, args.act)
+        
+        self.blk = Block(dim, args.depths[depth], args.drop_paths[depth], args.mlp_ratio, cp_bn_momentum, args.act, args, args.grid_size[depth])
         self.drop = DropPath(args.head_drops[depth])
         self.postproj = nn.Sequential(
             nn.BatchNorm1d(dim, momentum=args.bn_momentum),
@@ -207,9 +229,9 @@ class Stage(nn.Module):
 
         self.mamba2_block = Mamba2Block(dim, depth)
     
-    def local_aggregation(self, x, knn, pts, pts0):
+    def local_aggregation(self, x, xyz, knn, pts, pts0):
         x = x.unsqueeze(0)  # N x C -> 1 x N x C
-        x = self.blk(x, knn, pts, pts0) 
+        x = self.blk(x, xyz, knn, pts, pts0) 
         x = x.squeeze(0) # 1 x N x C -> N x C
         return x
 
@@ -267,7 +289,7 @@ class Stage(nn.Module):
         knn = knn.unsqueeze(0)
         pts = pts_list.pop() if pts_list is not None else None
 
-        x = checkpoint(self.local_aggregation, x, knn, pts, pts0) if self.training and self.cp else self.local_aggregation(x, knn, pts, pts0)
+        x = checkpoint(self.local_aggregation, x, xyz, knn, pts, pts0) if self.training and self.cp else self.local_aggregation(x, xyz, knn, pts, pts0)
 
         # Mamba2 aggregation
         # x, _ = self.mamba2_aggregation(x, xyz, pts0)

@@ -73,7 +73,7 @@ class Mamba2Block(nn.Module):
             use_mem_eff_path=False,
             **mamba_kwargs,
         )
-        
+        self.out_project = nn.Linear(dim*2, dim)  # Output projection to match input dimension
 
 
     def forward(
@@ -83,15 +83,18 @@ class Mamba2Block(nn.Module):
             residual=None, 
             inference_params=None,            
             seq_idx=None, 
-            cu_seqlens=None
+            cu_seqlens=None,
+            bidirectional=True
     ):
         # Pre-Norm + Residual
         if not self.fused:
             res = x if residual is None else residual + self.drop_path(x)
+
+            x = self.norm(res.to(dtype=self.norm.weight.dtype))
             if self.residual_in_fp32:
                 res = res.to(torch.float32)
-            x = self.norm(res)
             residual = res
+    
         else:
             fused_add_norm_fn = rms_norm_fn if isinstance(self.norm, RMSNorm) else layer_norm_fn
             if residual is None:
@@ -115,25 +118,55 @@ class Mamba2Block(nn.Module):
                     eps=self.norm.eps,
                 )
 
-        # u = x.unsqueeze(0) 
-        u = x
+        u = x.unsqueeze(0) 
         cu_seqlens = build_cu_seqlens(
             pts if pts is not None else [x.size(1)] * x.size(0),
             device=u.device
         )
-        seq_idx = None
-            # Mamba2 forward
-        u_out = self.mamba2(
+        # Mamba2 forward
+        u_out1 = self.mamba2(
             u,
             seq_idx=seq_idx,
             cu_seqlens=cu_seqlens,
             inference_params=inference_params
         )
-        out = u_out
+        if bidirectional:
+            # Reverse the input for backward pass
+            u_rev = u.clone()
+            for i in range(len(cu_seqlens)-1):
+                s, e = cu_seqlens[i].item(), cu_seqlens[i+1].item()
+                # print(f"[DEBUG] Szene {i}: slice von {s} bis {e}, Länge = {e-s}")
+                seg_before = u[0, s:e, 0].clone()  # Beispiel: erste Dimension, erster Feature-Kanal
+                # print("  before:", seg_before[:5], "...", seg_before[-5:])
+                
+                flipped = u[0, s:e, :].flip(0)     # hier war evtl. Achse vertauscht?
+                seg_after = flipped[:, 0]          # erstes Zeit-Element nach Flip
+                # print("  flipped first three elements:", seg_after[:3])
+                
+                u_rev[:, s:e, :] = flipped
+                # seg_rev = u_rev[0, s:e, 0]
+                # print("  in u_rev:", seg_rev[:5], "...", seg_rev[-5:])
 
-
+            # Mamba2 backward pass
+            u_out_bwd_rev = self.mamba2(
+                u_rev,
+                seq_idx=seq_idx,
+                cu_seqlens=cu_seqlens,
+                inference_params=inference_params
+            )
+            # Reverse the output of the backward pass
+            u_out2 = torch.empty_like(u_out_bwd_rev)
+            for i in range(len(cu_seqlens)-1):
+                s, e = cu_seqlens[i].item(), cu_seqlens[i+1].item()
+                u_out2[:, s:e, :] = u_out_bwd_rev[:, s:e, :].flip(1)
+            # Combine the outputs from forward and backward passes
+            u_out = torch.cat([u_out1, u_out2], dim=2)  # [1, L, C*2]
+            u_out = self.out_project(u_out)  # [1, L, C]
+            
+        else:
+            u_out = u_out1
         
-        # out = u_out.squeeze(0)  # [B, L, C] or [sum(Ni), C]
+        out = u_out
 
         return out, residual
 
