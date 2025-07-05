@@ -119,6 +119,10 @@ for i in range(start_epoch, epoch):
         # Backpropagation
         optimizer.zero_grad(set_to_none=True)
         scaler.scale(loss + closs*lam).backward()
+        scaler.unscale_(optimizer)
+        # Gradient clipping
+        max_norm = 1.0
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
         scaler.step(optimizer)
         scaler.update()
 
