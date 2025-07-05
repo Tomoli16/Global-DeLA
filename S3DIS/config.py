@@ -30,7 +30,7 @@ dela_args = SimpleNamespace()
 dela_args.ks = s3dis_args.k
 dela_args.depths = [4, 4, 8, 4]
 dela_args.grid_size = [0.04, 0.08, 0.16, 0.32]
-dela_args.order = "z"
+dela_args.order = [ "xyz", "xzy", "yxz", "yzx", "zxy", "zyx", "hilbert", "hilbert-trans", "z", "z-trans" ]
 dela_args.dims = [64, 128, 256, 512]
 dela_args.nbr_dims = [32, 32]
 dela_args.head_dim = 256
@@ -44,5 +44,6 @@ dela_args.act = nn.GELU
 dela_args.mlp_ratio = 2
 # gradient checkpoint
 dela_args.use_cp = False
+dela_args.mamba_depth = 4
 
 dela_args.cor_std = [1.6, 3.2, 6.4, 12.8]
