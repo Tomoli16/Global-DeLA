@@ -13,9 +13,9 @@ processed_data_path = raw_data_path.parent / "s3dis"
 
 epoch = 100
 warmup = 10
-batch_size = 12
-learning_rate = 1e-3
-label_smoothing = 0.2
+batch_size = 16
+learning_rate = 5e-4
+label_smoothing = 0.1
 
 s3dis_args = SimpleNamespace()
 s3dis_args.k = [24, 24, 24, 24]
