@@ -61,12 +61,15 @@ class S3DIS(Dataset):
         xyz, col, lbl = self.datas[idx]
 
         if self.train:
+            # Zufällige Rotation um die Hochachse und leichte Skalierung
             angle = random.random() * 2 * math.pi
             cos, sin = math.cos(angle), math.sin(angle)
             rotmat = torch.tensor([[cos, sin, 0], [-sin, cos, 0], [0, 0, 1]])
             rotmat *= random.uniform(0.8, 1.2)
             xyz = xyz @ rotmat
+            # Gaussche Rauschen hinzufügen
             xyz += torch.empty_like(xyz).normal_(std=0.005)
+            # Rezentrieren der Punkte
             xyz -= xyz.min(dim=0)[0]
 
         # here grid size is assumed 0.04, so estimated downsampling ratio is ~14
