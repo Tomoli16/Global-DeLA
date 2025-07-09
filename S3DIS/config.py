@@ -13,7 +13,7 @@ processed_data_path = raw_data_path.parent / "s3dis"
 
 epoch = 100
 warmup = 10
-batch_size = 16
+batch_size = 22
 learning_rate = 1e-3
 label_smoothing = 0.2
 
@@ -22,6 +22,31 @@ s3dis_args.k = [24, 24, 24, 24]
 s3dis_args.grid_size = [0.04, 0.08, 0.16, 0.32]
 
 s3dis_args.max_pts = 100000
+
+# Data‐Augmentation Konfiguration
+s3dis_args.datatransforms = {
+    'train': [
+        'ChromaticAutoContrast',
+        'PointCloudXYZAlign',
+        'ChromaticDropGPU',
+        'ChromaticNormalize',
+    ],
+    'val': [
+        'PointCloudXYZAlign',
+        'ChromaticNormalize',
+    ],
+    'vote': [
+        'ChromaticDropGPU',
+    ],
+    'kwargs': {
+        'color_drop': 0.2,
+        'gravity_dim': 2,
+        'scale': [0.9, 1.1],
+        'jitter_sigma': 0.005,
+        'jitter_clip': 0.02,
+    }
+}
+
 
 s3dis_warmup_args = deepcopy(s3dis_args)
 s3dis_warmup_args.grid_size = [0.04, 3.5, 3.5, 3.5]
@@ -45,5 +70,4 @@ dela_args.mlp_ratio = 2
 # gradient checkpoint
 dela_args.use_cp = False
 dela_args.mamba_depth = 4
-
 dela_args.cor_std = [1.6, 3.2, 6.4, 12.8]

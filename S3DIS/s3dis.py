@@ -8,6 +8,8 @@ import sys
 sys.path.append(str(Path(__file__).absolute().parent.parent))
 from utils.cutils import grid_subsampling, KDTree, grid_subsampling_test
 from config import processed_data_path
+from transforms.transforms_factory import DataTransforms, build_transforms_from_cfg
+
 
 class S3DIS(Dataset):
     r"""
@@ -48,6 +50,10 @@ class S3DIS(Dataset):
             self.paths = [maxp]
         
         self.datas = [torch.load(path) for path in self.paths]
+        self.transforms = build_transforms_from_cfg(
+            split="train" if train else "test",
+            datatransforms_cfg=args.datatransforms
+        )
 
 
     def __len__(self):
@@ -58,19 +64,20 @@ class S3DIS(Dataset):
             return self.get_test_item(idx)
 
         idx //= self.loop
-        xyz, col, lbl = self.datas[idx]
 
-        if self.train:
-            # Zufällige Rotation um die Hochachse und leichte Skalierung
-            angle = random.random() * 2 * math.pi
-            cos, sin = math.cos(angle), math.sin(angle)
-            rotmat = torch.tensor([[cos, sin, 0], [-sin, cos, 0], [0, 0, 1]])
-            rotmat *= random.uniform(0.8, 1.2)
-            xyz = xyz @ rotmat
-            # Gaussche Rauschen hinzufügen
-            xyz += torch.empty_like(xyz).normal_(std=0.005)
-            # Rezentrieren der Punkte
-            xyz -= xyz.min(dim=0)[0]
+        coord, feat, label = self.datas[idx]
+
+        data = {
+            'pos': coord,
+            'x':   feat,
+            'y':   label,
+        }
+
+        if self.transforms is not None:
+            data = self.transforms(data)
+        xyz = data['pos']
+        col = data['x']
+        lbl = data['y']
 
         # here grid size is assumed 0.04, so estimated downsampling ratio is ~14
         if self.train:

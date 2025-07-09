@@ -62,10 +62,10 @@ wandb.init(
 
 traindlr = DataLoader(S3DIS(s3dis_args, partition="!5", loop=30), batch_size=batch_size, # xyz, feature, indices, lbl
                       collate_fn=s3dis_collate_fn, shuffle=True, pin_memory=True, 
-                      persistent_workers=True, drop_last=True, num_workers=16)
+                      persistent_workers=True, drop_last=True, num_workers=10)
 testdlr = DataLoader(S3DIS(s3dis_args, partition="5", loop=1, train=False), batch_size=1,
                       collate_fn=s3dis_collate_fn, pin_memory=True, 
-                      persistent_workers=True, num_workers=16)
+                      persistent_workers=True, num_workers=10)
 print(len(traindlr))
 
 
@@ -75,7 +75,7 @@ model = DelaSemSeg(dela_args).cuda()
 # model = GridSSMamba(dela_args).cuda()
 
 optimizer = create_optimizer_v2(model, lr=lr, weight_decay=5e-2)
-scheduler = CosineLRScheduler(optimizer, t_initial = epoch * step_per_epoch, lr_min = lr/10000,
+scheduler = CosineLRScheduler(optimizer, t_initial = epoch * step_per_epoch, lr_min = lr/1e-3,
                                 warmup_t=warmup*step_per_epoch, warmup_lr_init = lr/20)
 scaler = GradScaler()
 # if wish to continue from a checkpoint
