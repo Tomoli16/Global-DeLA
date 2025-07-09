@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 from torch.nn.init import trunc_normal_
+import random
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).absolute().parent.parent))
@@ -18,6 +19,13 @@ from mamba_layer import Mamba2Block
 # Mit Checkpointing werden diese Zwischenergebnisse nicht gespeichert, sondern die Forward-Pass-Funktion wird bei Bedarf erneut aufgerufen.
 def checkpoint(function, *args, **kwargs):
     return torch_checkpoint(function, *args, use_reentrant=False, **kwargs)
+
+class SequentialWithArgs(nn.Sequential):
+    def forward(self, x, *args, **kwargs):
+        last_res = None
+        for module in self:
+            x, last_res = module(x, *args, **kwargs)
+        return x, last_res
 
 
 # Andert nichts an der Reihenfolge der Punkte
@@ -132,7 +140,7 @@ class Block(nn.Module):
 
 
 class Stage(nn.Module):
-    def __init__(self, args, depth=0):
+    def __init__(self, args, depth=0, drop_path_rate=0.2):
         super().__init__()
 
         self.depth = depth
@@ -194,10 +202,26 @@ class Stage(nn.Module):
             nn.Linear(32, 3, bias=False),
         )
 
+        mamba_depth = args.mamba_depth
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, mamba_depth)]  # stochastic depth decay rule
+        # import ipdb;ipdb.set_trace()
+        mamba_layer_idx = 0
+        inter_dpr = [0.0] + dpr
+        mamba_blocks = []
+        for _ in range(mamba_depth):
+            block = Mamba2Block(
+                dim,
+                layer_idx=mamba_layer_idx,
+                drop_path=inter_dpr[mamba_layer_idx]
+            )
+            mamba_blocks.append(block)
+            mamba_layer_idx += 1  # increment layer index for the next block
+
+        self.mamba_block = SequentialWithArgs(*mamba_blocks)
+
+        
         if not last:
             self.sub_stage = Stage(args, depth + 1)
-
-        self.mamba2_block = Mamba2Block(dim, depth)
     
     def local_aggregation(self, x, knn, pts):
         x = x.unsqueeze(0)  # N x C -> 1 x N x C
@@ -206,7 +230,7 @@ class Stage(nn.Module):
         return x
 
     # Übernimmt das orchestrieren der Mamba2-Block-Operationen
-    def mamba2_aggregation(self, x_flat, xyz, pts, inference_params=None):
+    def mamba2_aggregation(self, x_flat, xyz_flat, pts0, inference_params=None):
         """
         x_flat: Tensor [sum_i Ni, C]  (flattened batch of all scenes)
         pts:    Tensor [B]           (#Points per scene)
@@ -215,18 +239,35 @@ class Stage(nn.Module):
         # xyz = self.pos_emb(xyz)  # xyz: [sum_i Ni, C]
         # x_flat = x_flat + xyz  # add positional embedding to features
 
-        # 2) Serialization
+        # 1) Choose order
+        possible_orders = self.order if isinstance(self.order, list) else [self.order]
+        chosen_order = random.choice(possible_orders)
 
+        # 2) Serialization
+        xyz_flat, x_flat, _, inverse_order = serialization(
+            xyz_flat, x_flat, order=chosen_order, pts=pts0, grid_size=self.grid_size
+        )
     
-        # 2) Mamba2 Block
-        u_out, res = self.mamba2_block(
+        # 3) Mamba2 Block
+        x_out, x_res = self.mamba_block(
             x_flat,
-            pts=pts,
+            pts=pts0,
             inference_params=inference_params,
-            bidirectional=False,
+            bidirectional=True,
         )
 
-        return u_out, res
+        # 4) Deserialization
+        xyz_flat, x_out, x_res, _ = deserialization(
+            xyz_ser=xyz_flat,
+            feat_ser=x_out,
+            x_res_ser=x_res,
+            inverse_order=inverse_order,
+            layers_outputs_ser=None
+        )
+
+
+
+        return x_out, x_res
         
 
     def forward(self, x, xyz, prev_knn, indices, pts_list):
@@ -262,8 +303,9 @@ class Stage(nn.Module):
         pts = pts_list.pop() if pts_list is not None else None
         x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
 
-        # Mamba2 aggregation
-        x, _ = self.mamba2_aggregation(x, xyz, pts)
+        # Mamba2 aggregation only in last stage
+        if self.depth == self.up_depth:
+            x, _ = self.mamba2_aggregation(x, xyz, pts)
 
         # get subsequent feature maps (Rekursiver Aufruf)
         if not self.last:
