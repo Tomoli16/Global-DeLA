@@ -140,7 +140,7 @@ class Block(nn.Module):
 
 
 class Stage(nn.Module):
-    def __init__(self, args, depth=0, drop_path_rate=0.2):
+    def __init__(self, args, depth=0, drop_path_rate=0.4):
         super().__init__()
 
         self.depth = depth
@@ -202,7 +202,7 @@ class Stage(nn.Module):
             nn.Linear(32, 3, bias=False),
         )
 
-        mamba_depth = args.mamba_depth
+        mamba_depth = args.mamba_depth[depth]
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, mamba_depth)]  # stochastic depth decay rule
         # import ipdb;ipdb.set_trace()
         mamba_layer_idx = 0
@@ -265,8 +265,6 @@ class Stage(nn.Module):
             layers_outputs_ser=None
         )
 
-
-
         return x_out, x_res
         
 
@@ -303,9 +301,8 @@ class Stage(nn.Module):
         pts = pts_list.pop() if pts_list is not None else None
         x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
 
-        # Mamba2 aggregation only in last stage
-        if self.depth == self.up_depth:
-            x, _ = self.mamba2_aggregation(x, xyz, pts)
+        # Mamba2 aggregation
+        x, _ = self.mamba2_aggregation(x, xyz, pts)
 
         # get subsequent feature maps (Rekursiver Aufruf)
         if not self.last:

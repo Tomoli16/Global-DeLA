@@ -55,7 +55,8 @@ class Mamba2Block(nn.Module):
             drop_path=0.,
             norm_cls=nn.LayerNorm, 
             fused_add_norm=False,
-            residual_in_fp32=False, 
+            residual_in_fp32=False,
+            expand=4,
             **mamba_kwargs
     ):
         super().__init__()
@@ -64,7 +65,7 @@ class Mamba2Block(nn.Module):
         self.fused = fused_add_norm
         self.norm = norm_cls(dim)
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        expand = mamba_kwargs.get("expand", 2)
+        expand = expand
         headdim = (dim*expand) // 8
         self.mamba2 = Mamba2(
             d_model=dim,

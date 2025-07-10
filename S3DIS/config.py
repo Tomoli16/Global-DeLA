@@ -13,7 +13,7 @@ processed_data_path = raw_data_path.parent / "s3dis"
 
 epoch = 100
 warmup = 10
-batch_size = 22
+batch_size = 12
 learning_rate = 1e-3
 label_smoothing = 0.2
 
@@ -44,6 +44,6 @@ dela_args.act = nn.GELU
 dela_args.mlp_ratio = 2
 # gradient checkpoint
 dela_args.use_cp = False
-dela_args.mamba_depth = 4
+dela_args.mamba_depth = [2, 2, 2, 5]  # Mamba2 depth for each stage
 
 dela_args.cor_std = [1.6, 3.2, 6.4, 12.8]
