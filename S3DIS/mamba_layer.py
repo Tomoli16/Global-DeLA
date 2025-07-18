@@ -88,36 +88,17 @@ class Mamba2Block(nn.Module):
             bidirectional=True
     ):
         # Pre-Norm + Residual
-        if not self.fused:
-            res = x if residual is None else residual + self.drop_path(x)
-            if self.residual_in_fp32:
-                res = res.to(torch.float32)
-            x = self.norm(res)
-            residual = res
-        else:
-            fused_add_norm_fn = rms_norm_fn if isinstance(self.norm, RMSNorm) else layer_norm_fn
-            if residual is None:
-                x, residual = fused_add_norm_fn(
-                    x,
-                    self.norm.weight,
-                    self.norm.bias,
-                    residual=residual,
-                    prenorm=True,
-                    residual_in_fp32=self.residual_in_fp32,
-                    eps=self.norm.eps,
-                )
-            else:
-                x, residual = fused_add_norm_fn(
-                    self.drop_path(x),
-                    self.norm.weight,
-                    self.norm.bias,
-                    residual=residual,
-                    prenorm=True,
-                    residual_in_fp32=self.residual_in_fp32,
-                    eps=self.norm.eps,
-                )
 
-        u = x.unsqueeze(0) 
+        # res = x if residual is None else residual + self.drop_path(x)
+        # if self.residual_in_fp32:
+        #     res = res.to(torch.float32)
+        # x = self.norm(res)
+        # residual = res
+
+        x_norm = self.norm(x)
+
+
+        u = x_norm.unsqueeze(0) 
         cu_seqlens = build_cu_seqlens(
             pts if pts is not None else [x.size(1)] * x.size(0),
             device=u.device
@@ -167,5 +148,10 @@ class Mamba2Block(nn.Module):
         
         out = u_out.squeeze(0)  # [B, L, C] or [sum(Ni), C]
 
-        return out, residual
+        if self.residual_in_fp32:
+            out = out.to(torch.float32)
+
+        res = x + self.drop_path(out)
+
+        return res, res
 
