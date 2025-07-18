@@ -215,7 +215,7 @@ class Stage(nn.Module):
                 drop_path=inter_dpr[mamba_layer_idx]
             )
             mamba_blocks.append(block)
-            mamba_layer_idx += 1  # increment layer index for the next block
+            mamba_layer_idx += 1 
 
         self.mamba_block = SequentialWithArgs(*mamba_blocks)
 
@@ -235,9 +235,9 @@ class Stage(nn.Module):
         x_flat: Tensor [sum_i Ni, C]  (flattened batch of all scenes)
         pts:    Tensor [B]           (#Points per scene)
         """
-        # # # 1) Position Embedding
-        # xyz = self.pos_emb(xyz)  # xyz: [sum_i Ni, C]
-        # x_flat = x_flat + xyz  # add positional embedding to features
+        # # 1) Position Embedding
+        # xyz_flat = self.pos_emb(xyz_flat)
+        # x_flat = x_flat + xyz_flat  # add positional embedding to features
 
         # 1) Choose order
         possible_orders = self.order if isinstance(self.order, list) else [self.order]
