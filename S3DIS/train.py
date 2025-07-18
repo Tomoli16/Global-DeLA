@@ -79,7 +79,7 @@ scheduler = CosineLRScheduler(optimizer, t_initial = epoch * step_per_epoch, lr_
                                 warmup_t=warmup*step_per_epoch, warmup_lr_init = lr/20)
 scaler = GradScaler()
 # if wish to continue from a checkpoint
-resume = False
+resume = True
 if resume:
     start_epoch = util.load_state(f"output/model/{cur_id}/last.pt", model=model, optimizer=optimizer, scaler=scaler)["start_epoch"]
 else:

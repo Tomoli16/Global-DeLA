@@ -14,14 +14,14 @@ processed_data_path = raw_data_path.parent / "s3dis"
 epoch = 100
 warmup = 10
 batch_size = 12
-learning_rate = 1e-3
+learning_rate = 5e-3
 label_smoothing = 0.2
 
 s3dis_args = SimpleNamespace()
 s3dis_args.k = [24, 24, 24, 24]
 s3dis_args.grid_size = [0.04, 0.08, 0.16, 0.32]
 
-s3dis_args.max_pts = 100000
+s3dis_args.max_pts = 80000
 
 s3dis_warmup_args = deepcopy(s3dis_args)
 s3dis_warmup_args.grid_size = [0.04, 3.5, 3.5, 3.5]
