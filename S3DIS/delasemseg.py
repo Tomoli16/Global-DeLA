@@ -140,7 +140,7 @@ class Block(nn.Module):
 
 
 class Stage(nn.Module):
-    def __init__(self, args, depth=0, drop_path_rate=0.4):
+    def __init__(self, args, depth=0, drop_path_rate=0.2):
         super().__init__()
 
         self.depth = depth
@@ -201,23 +201,28 @@ class Stage(nn.Module):
             args.act(),
             nn.Linear(32, 3, bias=False),
         )
+        self.run_mamba = args.run_mamba
+        if (self.run_mamba):
 
-        mamba_depth = args.mamba_depth[depth]
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, mamba_depth)]  # stochastic depth decay rule
-        # import ipdb;ipdb.set_trace()
-        mamba_layer_idx = 0
-        inter_dpr = [0.0] + dpr
-        mamba_blocks = []
-        for _ in range(mamba_depth):
-            block = Mamba2Block(
-                dim,
-                layer_idx=mamba_layer_idx,
-                drop_path=inter_dpr[mamba_layer_idx]
-            )
-            mamba_blocks.append(block)
-            mamba_layer_idx += 1 
+            mamba_depth = args.mamba_depth[0]
+            dpr = [x.item() for x in torch.linspace(0, drop_path_rate, mamba_depth)]  # stochastic depth decay rule
+            # import ipdb;ipdb.set_trace()
+            mamba_layer_idx = 0
+            inter_dpr = [0.0] + dpr
+            mamba_blocks = []
+            for _ in range(mamba_depth):
+                block = Mamba2Block(
+                    dim,
+                    layer_idx=mamba_layer_idx,
+                    drop_path=inter_dpr[mamba_layer_idx],
+                    expand=4
+                )
+                mamba_blocks.append(block)
+                mamba_layer_idx += 1 
 
-        self.mamba_block = SequentialWithArgs(*mamba_blocks)
+            self.mamba_block = SequentialWithArgs(*mamba_blocks)
+        else:
+            self.mamba_block = None
 
         
         if not last:
@@ -236,8 +241,9 @@ class Stage(nn.Module):
         pts:    Tensor [B]           (#Points per scene)
         """
         # # 1) Position Embedding
-        # xyz_flat = self.pos_emb(xyz_flat)
-        # x_flat = x_flat + xyz_flat  # add positional embedding to features
+
+        # pos_emb_flat = self.pos_emb(xyz_flat)
+        # x_flat = x_flat + pos_emb_flat  # add positional embedding to features
 
         # 1) Choose order
         possible_orders = self.order if isinstance(self.order, list) else [self.order]
@@ -301,8 +307,10 @@ class Stage(nn.Module):
         pts = pts_list.pop() if pts_list is not None else None
         x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
 
-        # Mamba2 aggregation
-        x, _ = self.mamba2_aggregation(x, xyz, pts)
+        if self.first:
+            # Mamba2 aggregation
+            if self.run_mamba:
+                x, _ = self.mamba2_aggregation(x, xyz, pts)
 
         # get subsequent feature maps (Rekursiver Aufruf)
         if not self.last:
@@ -322,7 +330,9 @@ class Stage(nn.Module):
             closs = F.mse_loss(rel_p, rel_cor)
             sub_c = sub_c + closs if sub_c is not None else closs
 
-        # upsampling
+
+
+        # upsampling with nearest neighbor interpolation
         x = self.postproj(x)
         if not self.first:
             back_nn = indices[self.depth-1]

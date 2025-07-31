@@ -8,8 +8,6 @@ from typing import List, Optional, Tuple
 
 
 def serialization(xyz, feat, x_res=None, order="z", pts=None, layers_outputs=[], grid_size=0.02):
-    if pts is None:
-        pts = [xyz.shape[0]]
     if not isinstance(order, list):
         order = [order]
 
@@ -40,7 +38,6 @@ def serialization(xyz, feat, x_res=None, order="z", pts=None, layers_outputs=[],
 
     for i in range(len(layers_outputs)):
         layers_outputs[i] = layers_outputs[i][order]
-    print("First loop done")
     return xyz, feat, x_res, inverse_order
 
 def deserialization(

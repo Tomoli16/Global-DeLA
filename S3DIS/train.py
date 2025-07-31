@@ -12,7 +12,6 @@ from utils.timm.scheduler.cosine_lr import CosineLRScheduler
 from utils.timm.optim import create_optimizer_v2
 import utils.util as util
 from delasemseg import DelaSemSeg
-from gridssmamba import GridSSMamba
 from time import time, sleep
 from config import s3dis_args, s3dis_warmup_args, dela_args, batch_size, learning_rate as lr, epoch, warmup, label_smoothing as ls
 import wandb
@@ -33,7 +32,7 @@ def warmup_fn(model, dataset):
             loss = F.cross_entropy(p, y) + closs
         loss.backward()
 
-cur_id = "04"
+cur_id = "08"
 os.makedirs(f"output/log/{cur_id}", exist_ok=True)
 os.makedirs(f"output/model/{cur_id}", exist_ok=True)
 logfile = f"output/log/{cur_id}/out.log"
@@ -79,7 +78,7 @@ scheduler = CosineLRScheduler(optimizer, t_initial = epoch * step_per_epoch, lr_
                                 warmup_t=warmup*step_per_epoch, warmup_lr_init = lr/20)
 scaler = GradScaler()
 # if wish to continue from a checkpoint
-resume = True
+resume = False
 if resume:
     start_epoch = util.load_state(f"output/model/{cur_id}/last.pt", model=model, optimizer=optimizer, scaler=scaler)["start_epoch"]
 else:
@@ -155,20 +154,19 @@ for i in range(start_epoch, epoch):
                 p = model(xyz, feature, indices, pts)
             metric.update(p, y)
     
-    
-    
-    
     metric.print("val:  ")
     val_miou = metric.miou
     val_macc = metric.macc
     val_acc = metric.acc
+    duration = time() - now
     wandb.log({
         "epoch": i,
         "val_miou": val_miou,
         "val_macc": val_macc,
         "val_acc": val_acc,
+        "duration": duration,
     }, step=i)
-    print(f"duration: {time() - now}")
+    print(f"duration: {duration}")
     cur = metric.miou
     if best < cur:
         best = cur
@@ -177,3 +175,4 @@ for i in range(start_epoch, epoch):
     
     util.save_state(f"output/model/{cur_id}/last.pt", model=model, optimizer=optimizer, scaler=scaler, start_epoch=i+1)
 wandb.finish()
+

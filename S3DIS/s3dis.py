@@ -9,6 +9,43 @@ sys.path.append(str(Path(__file__).absolute().parent.parent))
 from utils.cutils import grid_subsampling, KDTree, grid_subsampling_test
 from config import processed_data_path
 
+def cutmix_pointcloud_torch(xyz1, feat1, lbl1, xyz2, feat2, lbl2, beta=1.0):
+    """
+    Reines Torch‑CutMix für Point Clouds:
+      xyz1, xyz2: [N,3] FloatTensors (auf GPU)
+      feat1, feat2: [N,C] FloatTensors
+      lbl1, lbl2: [N] LongTensors
+    """
+    # 1) λ aus Beta(β,β)
+    lam = torch.distributions.Beta(beta, beta).sample().item()
+
+    # 2) Bounding‑Box von xyz1
+    max_vals = xyz1.max(dim=0).values    # [3]
+    min_vals = xyz1.min(dim=0).values
+    ranges   = max_vals - min_vals       # [3]
+
+    # 3) Würfelgröße
+    cube_size = ranges * lam**(1/3)      # [3]
+
+    # 4) Zufällige Position des Würfels
+    bb_min = min_vals
+    bb_max = max_vals - cube_size
+    # falls cube_size > ranges:
+    bb_max = torch.max(bb_max, bb_min)
+    cube_min = bb_min + (bb_max - bb_min) * torch.rand(3, device=xyz1.device)
+    cube_max = cube_min + cube_size
+
+    # 5) Masken direkt in Torch
+    mask1 = ((xyz1 >= cube_min) & (xyz1 <= cube_max)).all(dim=1)  # [N]
+    mask2 = ((xyz2 >= cube_min) & (xyz2 <= cube_max)).all(dim=1)
+
+    # 6) Zusammenstellen der neuen Punktmenge
+    xyz_new  = torch.cat([xyz1[~mask1], xyz2[mask2]], dim=0)
+    feat_new = torch.cat([feat1[~mask1], feat2[mask2]], dim=0)
+    lbl_new  = torch.cat([lbl1[~mask1], lbl2[mask2]], dim=0)
+
+    return xyz_new, feat_new, lbl_new
+
 class S3DIS(Dataset):
     r"""
     partition   =>   areas, can be "2"  "23"  "!23"==="1456"   
@@ -48,7 +85,35 @@ class S3DIS(Dataset):
             self.paths = [maxp]
         
         self.datas = [torch.load(path) for path in self.paths]
+        self.cutmix_prob = 0
+        self.beta        = 1.0
 
+    def _augment_xyz(self, xyz: torch.Tensor) -> torch.Tensor:
+        """
+        Rotation um Hochachse, leichte Skalierung, gaussches Jitter
+        und Rezentrieren der Punkte.
+        """
+        # 1) Zufälliger Winkel und Skalierung
+        angle = random.random() * 2 * math.pi
+        scale = random.uniform(0.8, 1.2)
+        cos, sin = math.cos(angle), math.sin(angle)
+        rotmat = torch.tensor([
+            [cos,  sin,  0],
+            [-sin, cos,  0],
+            [0,    0,    1],
+        ], device=xyz.device, dtype=xyz.dtype) * scale
+
+        # 2) Rotation und Skalierung
+        xyz = xyz @ rotmat
+
+        # 3) Gaussches Rauschen
+        xyz += torch.empty_like(xyz).normal_(std=0.005)
+
+        # 4) Rezentrieren
+        min_vals = xyz.min(dim=0, keepdim=True)[0]
+        xyz = xyz - min_vals
+
+        return xyz
 
     def __len__(self):
         return len(self.paths) * self.loop
@@ -58,19 +123,25 @@ class S3DIS(Dataset):
             return self.get_test_item(idx)
 
         idx //= self.loop
-        xyz, col, lbl = self.datas[idx]
+        xyz1, col1, lbl1 = self.datas[idx]
 
         if self.train:
-            # Zufällige Rotation um die Hochachse und leichte Skalierung
-            angle = random.random() * 2 * math.pi
-            cos, sin = math.cos(angle), math.sin(angle)
-            rotmat = torch.tensor([[cos, sin, 0], [-sin, cos, 0], [0, 0, 1]])
-            rotmat *= random.uniform(0.8, 1.2)
-            xyz = xyz @ rotmat
-            # Gaussche Rauschen hinzufügen
-            xyz += torch.empty_like(xyz).normal_(std=0.005)
-            # Rezentrieren der Punkte
-            xyz -= xyz.min(dim=0)[0]
+            xyz1 = self._augment_xyz(xyz1)
+
+        if self.train and random.random() < self.cutmix_prob:
+            # wähle ein zweites zufälliges Sample
+            idx2 = random.randrange(len(self.datas))
+            xyz2, col2, lbl2 = self.datas[idx2]
+            xyz2 = self._augment_xyz(xyz2)
+
+            # wende CutMix an
+            xyz, col, lbl = cutmix_pointcloud_torch(
+                xyz1, col1, lbl1,
+                xyz2, col2, lbl2,
+                beta=self.beta
+            )
+        else:
+            xyz, col, lbl = xyz1, col1, lbl1
 
         # here grid size is assumed 0.04, so estimated downsampling ratio is ~14
         if self.train:

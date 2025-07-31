@@ -13,14 +13,14 @@ from torch.cuda.amp import autocast
 
 torch.set_float32_matmul_precision("high")
 
-loop = 12
+loop = 5
 
 testdlr = DataLoader(S3DIS(s3dis_args, partition="5", loop=loop, train=False, test=True), batch_size=1,
                       collate_fn=s3dis_test_collate_fn, pin_memory=True, num_workers=8)
 
 model = DelaSemSeg(dela_args).cuda()
 
-util.load_state("output/model/04/best.pt", model=model)
+util.load_state("output/model/08/best.pt", model=model)
 
 model.eval()
 

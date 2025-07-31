@@ -19,7 +19,9 @@ pip install .
 
 # Remember to install mamaba 
 cd ../../modules/mamba/
-pip install -e .[causal-conv1d] --no-build-isolation
+git fetch --tags
+git checkout v2.2.4
+pip install -e .[causal-conv1d] --no-build-isolation --constraint constraints.txt
 
 cd ../..
 

@@ -85,7 +85,7 @@ class Mamba2Block(nn.Module):
             inference_params=None,            
             seq_idx=None, 
             cu_seqlens=None,
-            bidirectional=True
+            bidirectional=False
     ):
         # Pre-Norm + Residual
 
