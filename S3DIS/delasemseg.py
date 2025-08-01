@@ -48,41 +48,21 @@ class LFP(nn.Module):
         x = self.bn(x.view(B*N, -1)).view(B, N, -1)
         return x
     
-class PosEmbedder(nn.Module):
-    """
-    Positional Embedding via MLP for point coordinates.
-
-    Expects a flat input tensor of shape (P, in_dim), where P = total number of points (batch_size * num_points).
-    Outputs an embedding tensor of shape (P, embed_dim).
-    """
-    def __init__(self,
-                 in_dim: int = 3,
-                 embed_dim: int = 64,
-                 hidden_dim: int = None,
-                 act: nn.Module = nn.GELU,
-                 bn_momentum: float = 0.1):
+class ConditionalPE(nn.Module):
+    def __init__(self, d_model, hidden=32):
         super().__init__()
-        # if no hidden dim specified, project directly to embed_dim
-        hidden = hidden_dim or embed_dim
-        layers = []
-        # first linear layer
-        layers.append(nn.Linear(in_dim, hidden, bias=False))
-        layers.append(nn.BatchNorm1d(hidden, momentum=bn_momentum))
-        layers.append(act())
-        # second projection to embed_dim
-        layers.append(nn.Linear(hidden, embed_dim, bias=False))
-        self.mlp = nn.Sequential(*layers)
+        self.net = nn.Sequential(
+            nn.Linear(3, hidden),          # xyz_norm in
+            nn.GELU(),
+            nn.BatchNorm1d(hidden),
+            nn.Linear(hidden, d_model)
+        )
+        self.dropout = nn.Dropout(0.1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Tensor of shape (P, in_dim)
-        Returns:
-            Tensor of shape (P, embed_dim)
-        """
-        # Directly apply MLP on flat input
-        emb = self.mlp(x)
-        return emb
+    def forward(self, xyz_norm):
+        pe = self.net(xyz_norm) 
+        return self.dropout(pe)
+
 
 
 class Mlp(nn.Module):
@@ -154,7 +134,8 @@ class Stage(nn.Module):
 
         self.grid_size = args.grid_size[depth]  # grid size for serialization
         self.order = args.order
-        self.pos_emb = PosEmbedder(in_dim=3, embed_dim=dim, hidden_dim=dim, act=args.act, bn_momentum=args.bn_momentum)
+        # self.pos_emb = PosEmbedder(in_dim=3, embed_dim=dim, hidden_dim=dim, act=args.act, bn_momentum=args.bn_momentum)
+        self.cpe = ConditionalPE(d_model=dim, hidden=dim) 
 
 
         self.cp = cp = args.use_cp  # Checkpointing
@@ -201,6 +182,13 @@ class Stage(nn.Module):
             args.act(),
             nn.Linear(32, 3, bias=False),
         )
+        self.pe_proj = nn.Sequential(
+            nn.Linear(dim*2, dim),
+            nn.GELU(),
+            nn.LayerNorm(dim)
+        )
+        self.norm = nn.LayerNorm(dim)
+
         self.run_mamba = args.run_mamba
         if (self.run_mamba):
 
@@ -233,6 +221,78 @@ class Stage(nn.Module):
         x = self.blk(x, knn, pts)
         x = x.squeeze(0) # 1 x N x C -> N x C
         return x
+    
+    def build_cu_seqlens(self, pts, device=None, dtype=torch.long):
+        """
+        Convert per-scene point counts to cumulative sequence lengths tensor.
+
+        Args:
+            pts: List[int] or Tensor [B] of point counts per scene
+            device: torch.device for output
+            dtype: torch.dtype for output
+        Returns:
+            cu_seqlens: Tensor [B+1]
+        """
+
+        # 1) pts in Tensor umwandeln
+        if isinstance(pts, list):
+            # dtype must be integer
+            pts_tensor = torch.tensor(pts, dtype=torch.long, device=device)
+        else:
+            pts_tensor = pts.to(device=device, dtype=torch.long)
+
+        # 2) cumulative sequence lengths: [0, N0, N0+N1, ...]
+        cu_seqlens = torch.cat([
+            pts_tensor.new_zeros(1),        # → [0]
+            pts_tensor.cumsum(0)            # → [N0, N0+N1, ...]
+        ])  # shape = [B+1]
+        return cu_seqlens.to(device=device, dtype=dtype)
+    
+    def normalize_xyz_flat(self, xyz_flat: torch.Tensor,
+                        cu_seqlens: torch.Tensor,
+                        eps: float = 1e-6) -> torch.Tensor:
+        """
+        xyz_flat   : [total_pts, 3]
+        cu_seqlens : [B+1]            – [0, N0, N0+N1, ...]
+        Rückgabe: xyz_norm [total_pts, 3] zentriert und auf [-1,1] skaliert pro Szene
+        """
+        total_pts = xyz_flat.size(0)
+        device = xyz_flat.device
+        B = cu_seqlens.numel() - 1  # Anzahl Szenen
+
+        # Punktanzahlen pro Szene
+        pts = cu_seqlens[1:] - cu_seqlens[:-1]  # [B]
+
+        # Szene-IDs pro Punkt: [0...0,1...1,...]
+        scene_ids = torch.arange(B, device=device).repeat_interleave(pts)  # [total_pts]
+
+        # 1) Mittelpunkt pro Szene
+        sum_xyz = torch.zeros(B, 3, device=device).scatter_add_(
+            0, scene_ids.unsqueeze(-1).expand(-1, 3), xyz_flat
+        )  # [B,3]
+        count = pts.unsqueeze(-1).to(xyz_flat.dtype)  # [B,1]
+        center = sum_xyz / (count + eps)  # [B,3]
+
+        # 2) Zentrieren
+        xyz_centered = xyz_flat - center[scene_ids]  # [total_pts,3]
+
+        # 3) Radius pro Punkt
+        radii = torch.linalg.norm(xyz_centered, dim=1, keepdim=True)  # [total_pts,1]
+
+        # 4) Max-Radius pro Szene via scatter_reduce_ (amax)
+        max_radii = torch.zeros(B, 1, device=device)  # [B,1]
+        # scatter_reduce_ schreibt in-place: Index muss die gleiche Shape wie src für dim=0
+        # scene_ids.unsqueeze(-1).expand(-1,1) hat Shape [total_pts,1], radii ist [total_pts,1]
+        max_radii.scatter_reduce_(0,
+                                scene_ids.unsqueeze(-1).expand(-1, 1),
+                                radii,
+                                reduce='amax',
+                                include_self=True)  # [B,1]
+
+        # 5) Normieren (Vermeidung division by zero durch eps)
+        xyz_norm = xyz_centered / (max_radii[scene_ids] + eps)  # [total_pts,3]
+
+        return xyz_norm
 
     # Übernimmt das orchestrieren der Mamba2-Block-Operationen
     def mamba2_aggregation(self, x_flat, xyz_flat, pts0, inference_params=None):
@@ -244,6 +304,19 @@ class Stage(nn.Module):
 
         # pos_emb_flat = self.pos_emb(xyz_flat)
         # x_flat = x_flat + pos_emb_flat  # add positional embedding to features
+        cu_seqlens = self.build_cu_seqlens(
+            pts0 if pts0 is not None else [x_flat.size(0)],
+            device=xyz_flat.device
+        )
+        xyz_norm = self.normalize_xyz_flat(xyz_flat, cu_seqlens)   # [total,3]
+        pe       = self.cpe(xyz_norm)                         # [total,dim_pe]
+
+        token = torch.cat([x_flat, pe], dim=-1)               # [total,C+pe]
+        token = self.pe_proj(token)                           # [total,C]
+
+        # 2) Pre-Norm → Mamba
+        token_norm = self.norm(token)
+
 
         # 1) Choose order
         possible_orders = self.order if isinstance(self.order, list) else [self.order]
@@ -251,13 +324,14 @@ class Stage(nn.Module):
 
         # 2) Serialization
         xyz_flat, x_flat, _, inverse_order = serialization(
-            xyz_flat, x_flat, order=chosen_order, pts=pts0, grid_size=self.grid_size
+            xyz_flat, token_norm, order=chosen_order, pts=pts0, grid_size=self.grid_size
         )
     
         # 3) Mamba2 Block
         x_out, x_res = self.mamba_block(
             x_flat,
             pts=pts0,
+            cu_seqlens=cu_seqlens,
             inference_params=inference_params,
             bidirectional=True,
         )

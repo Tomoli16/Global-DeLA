@@ -99,10 +99,10 @@ class Mamba2Block(nn.Module):
 
 
         u = x_norm.unsqueeze(0) 
-        cu_seqlens = build_cu_seqlens(
-            pts if pts is not None else [x.size(1)] * x.size(0),
-            device=u.device
-        )
+        # cu_seqlens = build_cu_seqlens(
+        #     pts if pts is not None else [x.size(0)],
+        #     device=u.device
+        # )
         # Mamba2 forward
         u_out1 = self.mamba2(
             u,

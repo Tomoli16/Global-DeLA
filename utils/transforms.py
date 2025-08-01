@@ -8,6 +8,8 @@ from typing import List, Optional, Tuple
 
 
 def serialization(xyz, feat, x_res=None, order="z", pts=None, layers_outputs=[], grid_size=0.02):
+    if pts is None:
+        pts = [xyz.shape[0]]
     if not isinstance(order, list):
         order = [order]
 
