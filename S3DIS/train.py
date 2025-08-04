@@ -11,10 +11,17 @@ sys.path.append(str(Path(__file__).absolute().parent.parent))
 from utils.timm.scheduler.cosine_lr import CosineLRScheduler
 from utils.timm.optim import create_optimizer_v2
 import utils.util as util
-from delasemseg import DelaSemSeg
 from time import time, sleep
-from config import s3dis_args, s3dis_warmup_args, dela_args, batch_size, learning_rate as lr, epoch, warmup, label_smoothing as ls
+from config import s3dis_args, s3dis_warmup_args, dela_args, batch_size, learning_rate as lr, epoch, warmup, label_smoothing as ls, model_type
 import wandb
+
+# Dynamic model import based on config
+if model_type == "dela_semseg":
+    from delasemseg import DelaSemSeg as ModelClass
+elif model_type == "dela_semseg_attn":
+    from delasemseg_attn import DelaSemSeg as ModelClass
+else:
+    raise ValueError(f"Unknown model_type: {model_type}. Use 'dela_semseg' or 'dela_semseg_attn'")
 
 torch.set_float32_matmul_precision("high")
 
@@ -32,7 +39,7 @@ def warmup_fn(model, dataset):
             loss = F.cross_entropy(p, y) + closs
         loss.backward()
 
-cur_id = "09"
+cur_id = "14"
 os.makedirs(f"output/log/{cur_id}", exist_ok=True)
 os.makedirs(f"output/model/{cur_id}", exist_ok=True)
 logfile = f"output/log/{cur_id}/out.log"
@@ -54,6 +61,7 @@ wandb.init(
         "epochs": epoch,
         "warmup_epochs": warmup,
         "label_smoothing": ls,
+        "model_type": model_type,
         **vars(s3dis_args),
         **vars(dela_args),
     },
@@ -70,7 +78,7 @@ print(len(traindlr))
 
 step_per_epoch = len(traindlr)
 
-model = DelaSemSeg(dela_args).cuda()
+model = ModelClass(dela_args).cuda()
 # model = GridSSMamba(dela_args).cuda()
 
 optimizer = create_optimizer_v2(model, lr=lr, weight_decay=1e-2)
@@ -143,6 +151,7 @@ for i in range(start_epoch, epoch):
 
     model.eval()
     metric.reset()
+    val_ttls = util.AverageMeter()
     with torch.no_grad():
         for xyz, feature, indices, pts, y in testdlr:
             xyz = xyz.cuda(non_blocking=True)
@@ -152,20 +161,25 @@ for i in range(start_epoch, epoch):
             y = y.cuda(non_blocking=True)
             with autocast():
                 p = model(xyz, feature, indices, pts)
+                loss = F.cross_entropy(p, y, label_smoothing=ls)
             metric.update(p, y)
+            val_ttls.update(loss.item())
     
     metric.print("val:  ")
     val_miou = metric.miou
     val_macc = metric.macc
     val_acc = metric.acc
+    val_loss = val_ttls.avg
     duration = time() - now
     wandb.log({
         "epoch": i,
+        "val_loss": val_loss,
         "val_miou": val_miou,
         "val_macc": val_macc,
         "val_acc": val_acc,
         "duration": duration,
     }, step=i)
+    print(f"val loss: {round(val_loss, 4)}")
     print(f"duration: {duration}")
     cur = metric.miou
     if best < cur:
