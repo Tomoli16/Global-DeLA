@@ -45,6 +45,9 @@ dela_args.mlp_ratio = 2
 # gradient checkpoint
 dela_args.use_cp = False
 dela_args.run_mamba = True
-dela_args.mamba_depth = [4]  # Mamba2 depth for each stage
+dela_args.mamba_depth = [2]  # Mamba2 depth for each stage
 
 dela_args.cor_std = [1.6, 3.2, 6.4, 12.8]
+
+# Model selection: "dela_semseg" or "dela_semseg_attn"
+model_type = "dela_semseg_attn"

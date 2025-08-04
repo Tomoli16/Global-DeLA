@@ -127,6 +127,7 @@ class Stage(nn.Module):
         self.up_depth = len(args.depths) - 1
 
         self.first = first = depth == 0
+        self.second = second = depth == 1
         self.last = last = depth == self.up_depth
 
         self.k = args.ks[depth]
@@ -203,7 +204,7 @@ class Stage(nn.Module):
                     dim,
                     layer_idx=mamba_layer_idx,
                     drop_path=inter_dpr[mamba_layer_idx],
-                    expand=4
+                    expand=2
                 )
                 mamba_blocks.append(block)
                 mamba_layer_idx += 1 
@@ -354,7 +355,7 @@ class Stage(nn.Module):
         """
         # Durch pop steht hier immer Punktanzahl für das aktuelle Level
         # pts0 = pts_list[-1]
-        
+        pts = pts_list.pop() if pts_list is not None else None
         
         # downsampling
         if not self.first:
@@ -378,19 +379,15 @@ class Stage(nn.Module):
 
         # Local aggregation block
         knn = knn.unsqueeze(0)
-        pts = pts_list.pop() if pts_list is not None else None
         x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
-
-        if self.first:
-            # Mamba2 aggregation
-            if self.run_mamba:
-                x, _ = self.mamba2_aggregation(x, xyz, pts)
 
         # get subsequent feature maps (Rekursiver Aufruf)
         if not self.last:
             sub_x, sub_c = self.sub_stage(x, xyz, knn, indices, pts_list)
         else:
             sub_x = sub_c = None
+
+
 
         # regularization (Macht Vorhersagen über relative Positionen)
         if self.training:
@@ -404,7 +401,10 @@ class Stage(nn.Module):
             closs = F.mse_loss(rel_p, rel_cor)
             sub_c = sub_c + closs if sub_c is not None else closs
 
-
+        if self.first:
+            # Mamba2 aggregation
+            if self.run_mamba:
+                x, _ = self.mamba2_aggregation(x, xyz, pts)
 
         # upsampling with nearest neighbor interpolation
         x = self.postproj(x)
