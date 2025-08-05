@@ -14,6 +14,7 @@ import utils.util as util
 from delasemseg import DelaSemSeg
 from time import time, sleep
 from config import scan_args, scan_warmup_args, dela_args, batch_size, learning_rate as lr, epoch, warmup, label_smoothing as ls
+import wandb
 
 torch.set_float32_matmul_precision("high")
 
@@ -42,6 +43,21 @@ sys.stdout = logfile
 sys.stderr = errfile
 
 print(r"base")
+
+# Initialize wandb
+wandb.init(
+    project="DeLA-ScanNet",
+    name=f"run_{cur_id}",
+    config={
+        "batch_size": batch_size,
+        "learning_rate": lr,
+        "epochs": epoch,
+        "warmup_epochs": warmup,
+        "label_smoothing": ls,
+        **vars(scan_args),
+        **vars(dela_args),
+    },
+)
 
 traindlr = DataLoader(ScanNetV2(scan_args, partition="train", loop=6), batch_size=batch_size, 
                       collate_fn=scan_collate_fn, shuffle=True, pin_memory=True, 
@@ -103,9 +119,23 @@ for i in range(start_epoch, epoch):
     print(f"epoch {i}:")
     print(f"loss: {round(ttls.avg, 4)} || cls: {round(corls.avg, 4)}")
     metric.print("train:")
+    train_miou = metric.miou
+    train_loss = ttls.avg
+    train_closs = corls.avg
+    wandb.log(
+        {
+            "epoch": i,
+            "train_loss": train_loss,
+            "train_closs": train_closs,
+            "train_miou": train_miou,
+            "learning_rate": optimizer.param_groups[0]["lr"],
+        },
+        step=i,
+    )
     
     model.eval()
     metric.reset()
+    val_ttls = util.AverageMeter()
     with torch.no_grad():
         for xyz, feature, indices, pts, y in testdlr:
             xyz = xyz.cuda(non_blocking=True)
@@ -115,10 +145,26 @@ for i in range(start_epoch, epoch):
             mask = y != 20
             with autocast():
                 p = model(xyz, feature, indices)
+                loss = F.cross_entropy(p, y, label_smoothing=ls, ignore_index=20)
             metric.update(p[mask], y[mask])
+            val_ttls.update(loss.item())
     
     metric.print("val:  ")
-    print(f"duration: {time() - now}")
+    val_miou = metric.miou
+    val_macc = metric.macc
+    val_acc = metric.acc
+    val_loss = val_ttls.avg
+    duration = time() - now
+    wandb.log({
+        "epoch": i,
+        "val_loss": val_loss,
+        "val_miou": val_miou,
+        "val_macc": val_macc,
+        "val_acc": val_acc,
+        "duration": duration,
+    }, step=i)
+    print(f"val loss: {round(val_loss, 4)}")
+    print(f"duration: {duration}")
     cur = metric.miou
     if best < cur:
         best = cur
@@ -126,3 +172,4 @@ for i in range(start_epoch, epoch):
         util.save_state(f"output/model/{cur_id}/best.pt", model=model)
     
     util.save_state(f"output/model/{cur_id}/last.pt", model=model, optimizer=optimizer, scaler=scaler, start_epoch=i+1)
+wandb.finish()

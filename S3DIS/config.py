@@ -49,5 +49,39 @@ dela_args.mamba_depth = [2]  # Mamba2 depth for each stage
 
 dela_args.cor_std = [1.6, 3.2, 6.4, 12.8]
 
+# Flash Attention Block Configuration
+dela_args.use_flash_attn_blocks = True  # Enable flash attention blocks in stages
+dela_args.flash_attn_layers = 2  # Number of flash attention layers per block
+
 # Model selection: "dela_semseg" or "dela_semseg_attn"
 model_type = "dela_semseg_attn"
+
+# Flash Attention Configuration Presets
+def configure_flash_attention(preset="default"):
+    """
+    Configure flash attention settings with different presets
+    
+    Args:
+        preset (str): Configuration preset
+            - "default": Basic flash attention with 2 layers
+            - "heavy": More layers for complex scenes  
+            - "light": Minimal flash attention for speed
+            - "disabled": Traditional LFP only
+    """
+    if preset == "default":
+        dela_args.use_flash_attn_blocks = True
+        dela_args.flash_attn_layers = 2
+    elif preset == "heavy":
+        dela_args.use_flash_attn_blocks = True
+        dela_args.flash_attn_layers = 4
+    elif preset == "light":
+        dela_args.use_flash_attn_blocks = True
+        dela_args.flash_attn_layers = 1
+    elif preset == "disabled":
+        dela_args.use_flash_attn_blocks = False
+        dela_args.flash_attn_layers = 0
+    else:
+        raise ValueError(f"Unknown preset: {preset}")
+
+# Apply default configuration
+configure_flash_attention("default")

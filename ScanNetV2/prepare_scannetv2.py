@@ -6,7 +6,7 @@ from config import raw_data_path as src, processed_data_path as dest
 
 print(f"Processed data will be saved in:\n{dest}")
 
-dest.mkdir(exist_ok=True)
+# dest.mkdir(exist_ok=True)
 
 remapper = torch.zeros(256, dtype=torch.uint8) + 20
 for i, x in enumerate([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 24, 28, 33, 34, 36, 39]):

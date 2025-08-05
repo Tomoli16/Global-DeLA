@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).absolute().parent.parent))
 import utils.util as util
-from delasemseg import DelaSemSeg
+from delasemseg_attn import DelaSemSeg
 from config import s3dis_args, dela_args
 from torch.cuda.amp import autocast
 
@@ -20,7 +20,7 @@ testdlr = DataLoader(S3DIS(s3dis_args, partition="5", loop=loop, train=False, te
 
 model = DelaSemSeg(dela_args).cuda()
 
-util.load_state("output/model/13/best.pt", model=model)
+util.load_state("output/model/15/best.pt", model=model)
 
 model.eval()
 

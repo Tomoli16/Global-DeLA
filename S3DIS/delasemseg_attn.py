@@ -35,6 +35,21 @@ class LFP(nn.Module):
         x = self.bn(x.view(B*N, -1)).view(B, N, -1)
         return x
 
+class ConditionalPE(nn.Module):
+    def __init__(self, d_model, hidden=32):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(3, hidden),          # xyz_norm in
+            nn.GELU(),
+            nn.BatchNorm1d(hidden),
+            nn.Linear(hidden, d_model)
+        )
+        self.dropout = nn.Dropout(0.1)
+
+    def forward(self, xyz_norm):
+        pe = self.net(xyz_norm) 
+        return self.dropout(pe)
+
 class Mlp(nn.Module):
     def __init__(self, in_dim, mlp_ratio, bn_momentum, act, init=0.):
         super().__init__()
@@ -148,6 +163,31 @@ class Stage(nn.Module):
         self.order = args.order
         self.grid_size = args.grid_size[depth]  # grid size for serialization
 
+        self.cpe = ConditionalPE(d_model=dim, hidden=dim) 
+        self.pe_proj = nn.Sequential(
+            nn.Linear(dim*2, dim),
+            nn.GELU(),
+            nn.LayerNorm(dim)
+        )
+        self.norm = nn.LayerNorm(dim)
+
+
+        # Flash Attention Block (separate from traditional Block)
+        self.use_flash_attn_block = getattr(args, 'use_flash_attn_blocks', False)
+        if self.use_flash_attn_block:
+            flash_attn_layers = getattr(args, 'flash_attn_layers', 2)
+            self.flash_attn_block = FlashAttentionBlock(
+                dim=dim,
+                num_layers=flash_attn_layers,
+                num_heads=8,
+                dropout=0.1,
+                mlp_ratio=args.mlp_ratio,
+                bn_momentum=args.bn_momentum,
+                act=args.act,
+                order=self.order,
+                grid_size=self.grid_size
+            )
+
         if not last:
             self.sub_stage = Stage(args, depth + 1)
     def build_cu_seqlens(self, seq_lens, device=None, dtype=torch.long):
@@ -174,6 +214,52 @@ class Stage(nn.Module):
             seq_lens_tensor.cumsum(0)            # → [N0, N0+N1, ...]
         ])  # shape = [B+1]
         return cu_seqlens.to(device=device, dtype=dtype)
+    
+    def normalize_xyz_flat(self, xyz_flat: torch.Tensor,
+                        cu_seqlens: torch.Tensor,
+                        eps: float = 1e-6) -> torch.Tensor:
+        """
+        xyz_flat   : [total_pts, 3]
+        cu_seqlens : [B+1]            – [0, N0, N0+N1, ...]
+        Rückgabe: xyz_norm [total_pts, 3] zentriert und auf [-1,1] skaliert pro Szene
+        """
+        total_pts = xyz_flat.size(0)
+        device = xyz_flat.device
+        B = cu_seqlens.numel() - 1  # Anzahl Szenen
+
+        # Punktanzahlen pro Szene
+        pts = cu_seqlens[1:] - cu_seqlens[:-1]  # [B]
+
+        # Szene-IDs pro Punkt: [0...0,1...1,...]
+        scene_ids = torch.arange(B, device=device).repeat_interleave(pts)  # [total_pts]
+
+        # 1) Mittelpunkt pro Szene
+        sum_xyz = torch.zeros(B, 3, device=device).scatter_add_(
+            0, scene_ids.unsqueeze(-1).expand(-1, 3), xyz_flat
+        )  # [B,3]
+        count = pts.unsqueeze(-1).to(xyz_flat.dtype)  # [B,1]
+        center = sum_xyz / (count + eps)  # [B,3]
+
+        # 2) Zentrieren
+        xyz_centered = xyz_flat - center[scene_ids]  # [total_pts,3]
+
+        # 3) Radius pro Punkt
+        radii = torch.linalg.norm(xyz_centered, dim=1, keepdim=True)  # [total_pts,1]
+
+        # 4) Max-Radius pro Szene via scatter_reduce_ (amax)
+        max_radii = torch.zeros(B, 1, device=device)  # [B,1]
+        # scatter_reduce_ schreibt in-place: Index muss die gleiche Shape wie src für dim=0
+        # scene_ids.unsqueeze(-1).expand(-1,1) hat Shape [total_pts,1], radii ist [total_pts,1]
+        max_radii.scatter_reduce_(0,
+                                scene_ids.unsqueeze(-1).expand(-1, 1),
+                                radii,
+                                reduce='amax',
+                                include_self=True)  # [B,1]
+
+        # 5) Normieren (Vermeidung division by zero durch eps)
+        xyz_norm = xyz_centered / (max_radii[scene_ids] + eps)  # [total_pts,3]
+
+        return xyz_norm
 
     def flash_attn_aggregation(self, x_flat, xyz_flat, pts):
         # 1) Choose order
@@ -240,6 +326,25 @@ class Stage(nn.Module):
         x = x.squeeze(0)
         return x
 
+    def flash_attn_block_aggregation(self, x, xyz, pts):
+        """Apply FlashAttentionBlock if enabled"""
+        if pts is None:
+            pts = [x.shape[0]]
+        cu_seqlens = self.build_cu_seqlens(pts, device=x.device, dtype=torch.int32)
+        xyz_norm = self.normalize_xyz_flat(xyz, cu_seqlens)   # [total,3]
+        pe       = self.cpe(xyz_norm)                         # [total,dim_pe]
+
+        token = torch.cat([x, pe], dim=-1)               # [total,C+pe]
+        token = self.pe_proj(token)                           # [total,C]
+
+        # 2) Pre-Norm → Mamba
+        token_norm = self.norm(token)
+
+        if hasattr(self, 'flash_attn_block'):
+            return self.flash_attn_block(token_norm, xyz, pts)
+        else:
+            return x
+
     def forward(self, x, xyz, prev_knn, indices, pts_list):
         """
         x: N x C
@@ -269,11 +374,12 @@ class Stage(nn.Module):
         pts = pts_list.pop() if pts_list is not None else None
         x = checkpoint(self.local_aggregation, x, knn, pts) if self.training and self.cp else self.local_aggregation(x, knn, pts)
 
+
         # get subsequent feature maps
         if not self.last:
             sub_x, sub_c = self.sub_stage(x, xyz, knn, indices, pts_list)
         else:
-            x = self.flash_attn_aggregation(x, xyz, pts) 
+            # x = self.flash_attn_aggregation(x, xyz, pts) 
             sub_x = sub_c = None
         
         # regularization
@@ -287,6 +393,12 @@ class Stage(nn.Module):
             rel_p = self.cor_head(rel_p)
             closs = F.mse_loss(rel_p, rel_cor)
             sub_c = sub_c + closs if sub_c is not None else closs
+
+        if self.last:
+            # Apply FlashAttentionBlock if enabled
+            if self.use_flash_attn_block:
+                flash_attn_func = lambda x, xyz, pts: self.flash_attn_block_aggregation(x, xyz, pts)
+                x = checkpoint(flash_attn_func, x, xyz, pts) if self.training and self.cp else self.flash_attn_block_aggregation(x, xyz, pts)
 
         # upsampling
         x = self.postproj(x)
@@ -347,4 +459,170 @@ class DelaSemSeg(nn.Module):
         if self.training:
             return self.head(x), closs
         return self.head(x)
+
+class FlashAttentionBlock(nn.Module):
+    """
+    Flash Attention Block with multiple attention layers and skip connections
+    """
+    def __init__(self, dim, num_layers=2, num_heads=8, dropout=0.1, mlp_ratio=4, 
+                 bn_momentum=0.02, act=nn.GELU, order=None, grid_size=0.04):
+        super().__init__()
+        self.dim = dim
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.dropout = dropout
+        self.order = order or ["xyz", "hilbert", "z"]
+        self.grid_size = grid_size
+        
+        # Multiple attention layers
+        self.attention_layers = nn.ModuleList([
+            nn.ModuleDict({
+                'qkv_proj': nn.Linear(dim, 3 * dim, bias=False),
+                'out_proj': nn.Linear(dim, dim, bias=False),
+                'norm': nn.LayerNorm(dim),
+                'dropout': nn.Dropout(dropout)
+            }) for _ in range(num_layers)
+        ])
+        
+        # MLP layers for each attention layer
+        self.mlp_layers = nn.ModuleList([
+            nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, int(dim * mlp_ratio)),
+                act(),
+                nn.Dropout(dropout),
+                nn.Linear(int(dim * mlp_ratio), dim),
+                nn.Dropout(dropout)
+            ) for _ in range(num_layers)
+        ])
+        
+        # Skip connection projections
+        self.skip_projections = nn.ModuleList([
+            nn.Linear(dim, dim, bias=False) if i > 0 else nn.Identity()
+            for i in range(num_layers)
+        ])
+        
+        # Final layer norm
+        self.final_norm = nn.LayerNorm(dim)
+        
+    def build_cu_seqlens(self, seq_lens, device, dtype=torch.int32):
+        """Build cumulative sequence lengths for flash attention"""
+        if not isinstance(seq_lens, torch.Tensor):
+            seq_lens_tensor = torch.tensor(seq_lens, dtype=dtype, device=device)
+        else:
+            seq_lens_tensor = seq_lens.to(device=device, dtype=dtype)
+
+        cu_seqlens = torch.cat([
+            seq_lens_tensor.new_zeros(1),
+            seq_lens_tensor.cumsum(0)
+        ])
+        return cu_seqlens.to(device=device, dtype=dtype)
+
+    def apply_flash_attention(self, x_flat, xyz_flat, pts, layer_idx):
+        """Apply flash attention to flattened features"""
+        # Choose serialization order
+        possible_orders = self.order if isinstance(self.order, list) else [self.order]
+        chosen_order = random.choice(possible_orders)
+
+        # Serialization
+        xyz_flat, x_flat, _, inverse_order = serialization(
+            xyz_flat, x_flat, order=chosen_order, pts=pts, grid_size=self.grid_size
+        )
+
+        # Prepare for flash attention
+        total, C = x_flat.shape
+        device = x_flat.device
+        seq_lens = pts if pts is not None else [x_flat.shape[0]]
+        cu_seqlens = self.build_cu_seqlens(seq_lens, device=device, dtype=torch.int32)
+        max_seqlen = int(max(seq_lens))
+
+        # Get QKV projections
+        qkv_flat = self.attention_layers[layer_idx]['qkv_proj'](x_flat)
+        q, k, v = qkv_flat.chunk(3, dim=-1)
+        
+        # Reshape for multi-head attention
+        q = q.view(total, self.num_heads, self.head_dim)
+        k = k.view(total, self.num_heads, self.head_dim)
+        v = v.view(total, self.num_heads, self.head_dim)
+
+        # Pack into qkv format
+        qkv = torch.stack([q, k, v], dim=1)
+        
+        # Apply flash attention
+        x_out = flash_attn_varlen_qkvpacked_func(
+            qkv,
+            cu_seqlens,
+            max_seqlen,
+            dropout_p=self.dropout if self.training else 0.0,
+            softmax_scale=None,
+            causal=False,
+            window_size=(-1, -1),
+            softcap=0.0,
+            alibi_slopes=None,
+            deterministic=False,
+            return_attn_probs=False,
+        )
+        
+        # Project output
+        x_out_flat = x_out.flatten(1)
+        x_out_flat = self.attention_layers[layer_idx]['out_proj'](x_out_flat)
+
+        # Deserialization
+        xyz_flat, x_out_flat, _, _ = deserialization(
+            xyz_ser=xyz_flat,
+            feat_ser=x_out_flat,
+            x_res_ser=x_out_flat,
+            inverse_order=inverse_order,
+            layers_outputs_ser=None
+        )
+
+        return x_out_flat
+
+    def forward(self, x, xyz, pts=None):
+        """
+        Forward pass with multiple flash attention layers and skip connections
+        
+        Args:
+            x: Input features [N, C]
+            xyz: Point coordinates [N, 3]
+            pts: Points per sequence (for batched processing)
+        """
+        residual_connections = []
+        
+        for i in range(self.num_layers):
+            # Store residual connection
+            if i == 0:
+                residual = x
+            else:
+                # Apply skip projection for deeper layers
+                residual = self.skip_projections[i](x)
+            
+            residual_connections.append(residual)
+            
+            # Layer normalization
+            x_norm = self.attention_layers[i]['norm'](x)
+            
+            # Flash attention
+            x_attn = self.apply_flash_attention(x_norm, xyz, pts, i)
+            x_attn = self.attention_layers[i]['dropout'](x_attn)
+            
+            # First residual connection (attention)
+            x = residual + x_attn
+            
+            # MLP with second residual connection
+            x_mlp = self.mlp_layers[i](x)
+            x = x + x_mlp
+            
+            # Additional skip connections from previous layers
+            if i > 0:
+                # Add skip connections from all previous layers with learnable weights
+                skip_weight = 0.1 / i  # Decrease weight for older connections
+                for j in range(i):
+                    x = x + skip_weight * residual_connections[j]
+        
+        # Final layer normalization
+        x = self.final_norm(x)
+        
+        return x
 
