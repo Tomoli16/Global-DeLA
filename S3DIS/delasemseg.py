@@ -82,6 +82,87 @@ class Mlp(nn.Module):
         x = self.mlp(x.view(B*N, -1)).view(B, N, -1)
         return x
 
+class MambaMlp(nn.Module):
+    """MLP for use between Mamba layers with flat input/output."""
+    def __init__(self, in_dim, mlp_ratio, act):
+        super().__init__()
+        hid_dim = round(in_dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, hid_dim),
+            act(),
+            nn.Linear(hid_dim, in_dim),
+        )
+    
+    def forward(self, x, *args, **kwargs):
+        """
+        Args:
+            x: [L, C] input features
+            *args, **kwargs: compatibility with Mamba2Block interface
+            
+        Returns:
+            output: [L, C] processed features  
+            residual: [L, C] same as output for compatibility
+        """
+        out = self.mlp(x)
+        return out, out
+
+class MambaResidualBlock(nn.Module):
+    """
+    Residual block combining Mamba2Block + MLP with proper residual connections.
+    
+    Args:
+        dim: Model dimension
+        layer_idx: Layer index for Mamba2
+        drop_path: Drop path rate
+        expand: Expansion factor for Mamba2
+        use_mlp: Whether to include MLP after Mamba2
+        mlp_ratio: MLP expansion ratio
+        mlp_act: MLP activation function
+    """
+    def __init__(self, dim, layer_idx, drop_path=0., expand=2, use_mlp=True, mlp_ratio=2.0, mlp_act=nn.GELU):
+        super().__init__()
+        self.use_mlp = use_mlp
+        
+        # Mamba2 block with internal residual connections
+        self.mamba_block = Mamba2Block(
+            dim=dim,
+            layer_idx=layer_idx, 
+            drop_path=drop_path,
+            expand=expand
+        )
+        
+        # Optional MLP layer
+        if use_mlp:
+            self.mlp = MambaMlp(dim, mlp_ratio, mlp_act)
+            
+    def forward(self, x, *args, **kwargs):
+        """
+        Forward pass with proper residual connections.
+        
+        Args:
+            x: [L, C] input features
+            *args, **kwargs: passed to Mamba2Block
+            
+        Returns:
+            output: [L, C] processed features
+            residual: [L, C] same as output for compatibility
+        """
+        # Store input for block-level residual connection
+        x_input = x
+        
+        # Mamba2 processing (already has internal residual: input + mamba_output)
+        x_mamba, _ = self.mamba_block(x, *args, **kwargs)
+        
+        # MLP processing with block-level residual connection
+        if self.use_mlp:
+            x_mlp, _ = self.mlp(x_mamba)
+            # Block-level residual: connect input to final output
+            x_out = x_input + x_mlp
+        else:
+            x_out = x_mamba
+            
+        return x_out, x_out
+
 class Block(nn.Module):
     def __init__(self, dim, depth, drop_path, mlp_ratio, bn_momentum, act):
         super().__init__()
@@ -192,22 +273,25 @@ class Stage(nn.Module):
 
         self.run_mamba = args.run_mamba
         if (self.run_mamba):
-
             mamba_depth = args.mamba_depth[0]
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, mamba_depth)]  # stochastic depth decay rule
-            # import ipdb;ipdb.set_trace()
             mamba_layer_idx = 0
             inter_dpr = [0.0] + dpr
             mamba_blocks = []
-            for _ in range(mamba_depth):
-                block = Mamba2Block(
-                    dim,
+            
+            for i in range(mamba_depth):
+                # Create residual block with Mamba2 + optional MLP
+                block = MambaResidualBlock(
+                    dim=dim,
                     layer_idx=mamba_layer_idx,
                     drop_path=inter_dpr[mamba_layer_idx],
-                    expand=2
+                    expand=2,
+                    use_mlp=args.mamba_use_mlp,
+                    mlp_ratio=args.mamba_mlp_ratio,
+                    mlp_act=args.mamba_mlp_act
                 )
                 mamba_blocks.append(block)
-                mamba_layer_idx += 1 
+                mamba_layer_idx += 1
 
             self.mamba_block = SequentialWithArgs(*mamba_blocks)
         else:
@@ -223,7 +307,7 @@ class Stage(nn.Module):
         x = x.squeeze(0) # 1 x N x C -> N x C
         return x
     
-    def build_cu_seqlens(self, pts, device=None, dtype=torch.long):
+    def _build_cu_seqlens(self, pts, device=None, dtype=torch.long):
         """
         Convert per-scene point counts to cumulative sequence lengths tensor.
 
@@ -235,126 +319,226 @@ class Stage(nn.Module):
             cu_seqlens: Tensor [B+1]
         """
 
-        # 1) pts in Tensor umwandeln
+        # pts in Tensor umwandeln
         if isinstance(pts, list):
-            # dtype must be integer
             pts_tensor = torch.tensor(pts, dtype=torch.long, device=device)
         else:
             pts_tensor = pts.to(device=device, dtype=torch.long)
 
-        # 2) cumulative sequence lengths: [0, N0, N0+N1, ...]
+        # Build cumulative sequence lengths: [0, N0, N0+N1, ...]
         cu_seqlens = torch.cat([
-            pts_tensor.new_zeros(1),        # → [0]
-            pts_tensor.cumsum(0)            # → [N0, N0+N1, ...]
-        ])  # shape = [B+1]
+            pts_tensor.new_zeros(1),        # Start with [0]
+            pts_tensor.cumsum(0)            # Add cumulative sums
+        ])
         return cu_seqlens.to(device=device, dtype=dtype)
     
-    def normalize_xyz_flat(self, xyz_flat: torch.Tensor,
-                        cu_seqlens: torch.Tensor,
-                        eps: float = 1e-6) -> torch.Tensor:
+    def _normalize_xyz_flat(self, xyz_flat, cu_seqlens, eps=1e-6):
         """
-        xyz_flat   : [total_pts, 3]
-        cu_seqlens : [B+1]            – [0, N0, N0+N1, ...]
-        Rückgabe: xyz_norm [total_pts, 3] zentriert und auf [-1,1] skaliert pro Szene
+        Normalize xyz coordinates per scene to [-1, 1] range.
+        
+        Args:
+            xyz_flat: [total_pts, 3] flattened coordinates
+            cu_seqlens: [B+1] cumulative sequence lengths
+            eps: small epsilon to avoid division by zero
+            
+        Returns:
+            xyz_norm: [total_pts, 3] normalized coordinates
         """
-        total_pts = xyz_flat.size(0)
         device = xyz_flat.device
-        B = cu_seqlens.numel() - 1  # Anzahl Szenen
+        B = cu_seqlens.numel() - 1  # Number of scenes
 
-        # Punktanzahlen pro Szene
+        # Points per scene
         pts = cu_seqlens[1:] - cu_seqlens[:-1]  # [B]
 
-        # Szene-IDs pro Punkt: [0...0,1...1,...]
+        # Scene IDs per point: [0...0, 1...1, ...]
         scene_ids = torch.arange(B, device=device).repeat_interleave(pts)  # [total_pts]
 
-        # 1) Mittelpunkt pro Szene
+        # Compute center per scene
         sum_xyz = torch.zeros(B, 3, device=device).scatter_add_(
             0, scene_ids.unsqueeze(-1).expand(-1, 3), xyz_flat
-        )  # [B,3]
-        count = pts.unsqueeze(-1).to(xyz_flat.dtype)  # [B,1]
-        center = sum_xyz / (count + eps)  # [B,3]
+        )  # [B, 3]
+        count = pts.unsqueeze(-1).to(xyz_flat.dtype)  # [B, 1]
+        center = sum_xyz / (count + eps)  # [B, 3]
 
-        # 2) Zentrieren
-        xyz_centered = xyz_flat - center[scene_ids]  # [total_pts,3]
+        # Center coordinates
+        xyz_centered = xyz_flat - center[scene_ids]  # [total_pts, 3]
 
-        # 3) Radius pro Punkt
-        radii = torch.linalg.norm(xyz_centered, dim=1, keepdim=True)  # [total_pts,1]
+        # Compute radius per point
+        radii = torch.linalg.norm(xyz_centered, dim=1, keepdim=True)  # [total_pts, 1]
 
-        # 4) Max-Radius pro Szene via scatter_reduce_ (amax)
-        max_radii = torch.zeros(B, 1, device=device)  # [B,1]
-        # scatter_reduce_ schreibt in-place: Index muss die gleiche Shape wie src für dim=0
-        # scene_ids.unsqueeze(-1).expand(-1,1) hat Shape [total_pts,1], radii ist [total_pts,1]
-        max_radii.scatter_reduce_(0,
-                                scene_ids.unsqueeze(-1).expand(-1, 1),
-                                radii,
-                                reduce='amax',
-                                include_self=True)  # [B,1]
+        # Max radius per scene
+        max_radii = torch.zeros(B, 1, device=device)  # [B, 1]
+        max_radii.scatter_reduce_(
+            0,
+            scene_ids.unsqueeze(-1).expand(-1, 1),
+            radii,
+            reduce='amax',
+            include_self=True
+        )  # [B, 1]
 
-        # 5) Normieren (Vermeidung division by zero durch eps)
-        xyz_norm = xyz_centered / (max_radii[scene_ids] + eps)  # [total_pts,3]
+        # Normalize to [-1, 1] range
+        xyz_norm = xyz_centered / (max_radii[scene_ids] + eps)  # [total_pts, 3]
 
         return xyz_norm
 
-    # Übernimmt das orchestrieren der Mamba2-Block-Operationen
-    def mamba2_aggregation(self, x_flat, xyz_flat, pts0, inference_params=None):
+    def _add_positional_encoding(self, x_flat, xyz_flat, pts):
         """
-        x_flat: Tensor [sum_i Ni, C]  (flattened batch of all scenes)
-        pts:    Tensor [B]           (#Points per scene)
+        Add positional encoding to features.
+        
+        Args:
+            x_flat: [total_pts, C] input features
+            xyz_flat: [total_pts, 3] coordinates
+            pts: [B] points per scene
+            
+        Returns:
+            features_with_pe: [total_pts, C] features with positional encoding
         """
-        # # 1) Position Embedding
+        # Build cumulative sequence lengths
+        cu_seqlens = self._build_cu_seqlens(pts, device=xyz_flat.device)
+        
+        # Normalize coordinates per scene
+        xyz_norm = self._normalize_xyz_flat(xyz_flat, cu_seqlens)
+        
+        # Generate positional encoding
+        pe = self.cpe(xyz_norm)  # [total_pts, C]
+        
+        # Combine features with positional encoding
+        combined_features = torch.cat([x_flat, pe], dim=-1)  # [total_pts, C*2]
+        features_with_pe = self.pe_proj(combined_features)  # [total_pts, C]
+        
+        return features_with_pe, cu_seqlens
 
-        # pos_emb_flat = self.pos_emb(xyz_flat)
-        # x_flat = x_flat + pos_emb_flat  # add positional embedding to features
-        cu_seqlens = self.build_cu_seqlens(
-            pts0 if pts0 is not None else [x_flat.size(0)],
-            device=xyz_flat.device
-        )
-        xyz_norm = self.normalize_xyz_flat(xyz_flat, cu_seqlens)   # [total,3]
-        pe       = self.cpe(xyz_norm)                         # [total,dim_pe]
-
-        token = torch.cat([x_flat, pe], dim=-1)               # [total,C+pe]
-        token = self.pe_proj(token)                           # [total,C]
-
-        # 2) Pre-Norm → Mamba
-        token_norm = self.norm(token)
-
-
-        # 1) Choose order
-        possible_orders = self.order if isinstance(self.order, list) else [self.order]
+    def _serialize_features(self, xyz_flat, features_norm, pts, order):
+        """
+        Serialize features using the specified order.
+        
+        Args:
+            xyz_flat: [total_pts, 3] coordinates
+            features_norm: [total_pts, C] normalized features
+            pts: [B] points per scene
+            order: serialization order
+            
+        Returns:
+            xyz_ser: serialized coordinates
+            features_ser: serialized features
+            inverse_order: order for deserialization
+        """
+        # Choose serialization order
+        possible_orders = order if isinstance(order, list) else [order]
         chosen_order = random.choice(possible_orders)
 
-        # 2) Serialization
-        xyz_flat, x_flat, _, inverse_order = serialization(
-            xyz_flat, token_norm, order=chosen_order, pts=pts0, grid_size=self.grid_size
+        # Perform serialization
+        xyz_ser, features_ser, _, inverse_order = serialization(
+            xyz_flat, features_norm, 
+            order=chosen_order, 
+            pts=pts, 
+            grid_size=self.grid_size
         )
-    
-        # 3) Mamba2 Block
-        x_out, x_res = self.mamba_block(
-            x_flat,
-            pts=pts0,
+        
+        return xyz_ser, features_ser, inverse_order
+
+    def _process_mamba_blocks(self, features_ser, pts, cu_seqlens, inference_params):
+        """
+        Process features through Mamba2 blocks.
+        
+        Args:
+            features_ser: [total_pts, C] serialized features
+            pts: [B] points per scene
+            cu_seqlens: [B+1] cumulative sequence lengths
+            inference_params: inference parameters
+            
+        Returns:
+            features_out: [total_pts, C] processed features
+            features_res: [total_pts, C] residual features
+        """
+        return self.mamba_block(
+            features_ser,
+            pts=pts,
             cu_seqlens=cu_seqlens,
             inference_params=inference_params,
             bidirectional=True,
         )
 
-        # 4) Deserialization
-        xyz_flat, x_out, x_res, _ = deserialization(
-            xyz_ser=xyz_flat,
-            feat_ser=x_out,
-            x_res_ser=x_res,
+    def _deserialize_features(self, xyz_ser, features_out, features_res, inverse_order):
+        """
+        Deserialize features back to original order.
+        
+        Args:
+            xyz_ser: serialized coordinates
+            features_out: [total_pts, C] processed features
+            features_res: [total_pts, C] residual features
+            inverse_order: deserialization order
+            
+        Returns:
+            xyz_deser: deserialized coordinates
+            features_out_deser: deserialized features
+            features_res_deser: deserialized residual features
+        """
+        return deserialization(
+            xyz_ser=xyz_ser,
+            feat_ser=features_out,
+            x_res_ser=features_res,
             inverse_order=inverse_order,
             layers_outputs_ser=None
         )
 
-        return x_out, x_res
+    def mamba2_aggregation(self, x_flat, xyz_flat, pts, inference_params=None):
+        """
+        Apply Mamba2 aggregation with serialization for efficient point cloud processing.
+        
+        Args:
+            x_flat: [total_pts, C] flattened features
+            xyz_flat: [total_pts, 3] flattened coordinates
+            pts: [B] points per scene
+            inference_params: optional inference parameters
+            
+        Returns:
+            features_out: [total_pts, C] processed features with residual connection
+        """
+        # Store original input for proper residual connection
+        x_original = x_flat.clone()
+        
+        # Add positional encoding
+        features_with_pe, cu_seqlens = self._add_positional_encoding(x_flat, xyz_flat, pts)
+        
+        # Pre-normalization
+        features_norm = self.norm(features_with_pe)
+        
+        # Serialize features for efficient processing
+        xyz_ser, features_ser, inverse_order = self._serialize_features(
+            xyz_flat, features_norm, pts, self.order
+        )
+        
+        # Process through Mamba2 blocks
+        features_out, _ = self._process_mamba_blocks(
+            features_ser, pts, cu_seqlens, inference_params
+        )
+        
+        # Deserialize back to original order
+        _, features_out_final, _, _ = self._deserialize_features(
+            xyz_ser, features_out, features_out, inverse_order
+        )
+        
+        # Proper residual connection to original input
+        return x_original + features_out_final
         
 
     def forward(self, x, xyz, prev_knn, indices, pts_list):
         """
-        x: N x C
+        Forward pass through the Stage.
+        
+        Args:
+            x: [N, C] input features
+            xyz: [N, 3] point coordinates
+            prev_knn: previous k-nearest neighbors
+            indices: downsampling indices
+            pts_list: list of point counts per scene
+            
+        Returns:
+            sub_x: processed features
+            sub_c: classification loss (if training)
         """
-        # Durch pop steht hier immer Punktanzahl für das aktuelle Level
-        # pts0 = pts_list[-1]
+        # Extract point count for current level
         pts = pts_list.pop() if pts_list is not None else None
         
         # downsampling
@@ -401,10 +585,10 @@ class Stage(nn.Module):
             closs = F.mse_loss(rel_p, rel_cor)
             sub_c = sub_c + closs if sub_c is not None else closs
 
-        if self.first:
-            # Mamba2 aggregation
+        if self.last:
+            # Mamba2 aggregation for enhanced feature processing
             if self.run_mamba:
-                x, _ = self.mamba2_aggregation(x, xyz, pts)
+                x = self.mamba2_aggregation(x, xyz, pts)
 
         # upsampling with nearest neighbor interpolation
         x = self.postproj(x)
