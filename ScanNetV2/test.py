@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).absolute().parent.parent))
 import utils.util as util
-from delasemseg import DelaSemSeg
+from delasemseg_attn import DelaSemSeg
 from config import scan_args, dela_args
 from torch.cuda.amp import autocast
 
@@ -21,7 +21,7 @@ testdlr = DataLoader(ScanNetV2(scan_args, partition="val", loop=loop, train=Fals
 
 model = DelaSemSeg(dela_args).cuda()
 
-util.load_state("pretrained/best.pt", model=model)
+util.load_state("output/model/2/best.pt", model=model)
 
 model.eval()
 

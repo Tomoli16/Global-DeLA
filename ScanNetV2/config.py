@@ -1,3 +1,27 @@
+"""
+ScanNetV2 Configuration for DeLA with Mamba2 Support
+
+This configuration file supports both Flash Attention and Mamba2 aggregation methods.
+
+Usage Examples:
+1. Enable Mamba2 aggregation:
+   configure_mamba2("default")  # or "light", "heavy"
+   
+2. Enable both Flash Attention and Mamba2:
+   configure_flash_attention("default")
+   configure_mamba2("default")
+   
+3. Use only traditional LFP (disable all modern methods):
+   configure_flash_attention("disabled")
+   configure_mamba2("disabled")
+
+4. Set custom run ID:
+   configure_run("experiment_01")
+
+Note: Mamba2 requires mamba_ssm package to be installed.
+If not available, the model will fall back to linear layers.
+"""
+
 from pathlib import Path
 from types import SimpleNamespace
 from copy import deepcopy
@@ -19,17 +43,21 @@ with open(scan_train, 'r') as file:
 with open(scan_val, 'r') as file:
     scan_val = [line.strip() for line in file.readlines()]
 
+# Training Configuration
 epoch = 100
 warmup = 10
-batch_size = 8
-learning_rate = 6e-3
+batch_size = 16
+learning_rate = 1e-3
 label_smoothing = 0.2
+
+# Run Configuration
+run_id = "01"  # Default run ID, can be overridden by command line arguments
 
 scan_args = SimpleNamespace()
 scan_args.k = [24, 24, 24, 24, 24]
 scan_args.grid_size = [0.02, 0.04, 0.08, 0.16, 0.32]
 
-scan_args.max_pts = 80000
+scan_args.max_pts = 30000
 
 scan_warmup_args = deepcopy(scan_args)
 scan_warmup_args.grid_size = [0.02, 2, 3.5, 3.5, 4]
@@ -37,6 +65,8 @@ scan_warmup_args.grid_size = [0.02, 2, 3.5, 3.5, 4]
 dela_args = SimpleNamespace()
 dela_args.ks = scan_args.k
 dela_args.depths = [4, 4, 4, 8, 4]
+dela_args.grid_size = scan_args.grid_size
+dela_args.order = [ "xyz", "xzy", "yxz", "yzx", "zxy", "zyx", "hilbert", "hilbert-trans", "z", "z-trans" ]
 dela_args.dims = [64, 96, 160, 288, 512]
 dela_args.nbr_dims = [32, 32]
 dela_args.head_dim = 288
@@ -52,3 +82,88 @@ dela_args.mlp_ratio = 2
 dela_args.use_cp = False
 
 dela_args.cor_std = [1.6, 2.5, 5, 10, 20]
+
+# Flash Attention Block Configuration
+dela_args.use_flash_attn_blocks = False  # Enable flash attention blocks in stages
+dela_args.flash_attn_layers = 2  # Number of flash attention layers per block
+
+# Mamba2 Configuration
+dela_args.run_mamba = True  # Enable Mamba2 aggregation (set to True to enable)
+dela_args.mamba_depth = [2]  # Depth of Mamba2 blocks
+dela_args.mamba_drop_path_rate = 0.1  # Drop path rate for Mamba2 blocks
+
+# Model selection: "dela_semseg" or "dela_semseg_attn"
+model_type = "dela_semseg_attn"
+
+# Flash Attention Configuration Presets
+def configure_flash_attention(preset="disabled"):
+    """
+    Configure flash attention settings with different presets
+    
+    Args:
+        preset (str): Configuration preset
+            - "default": Basic flash attention with 2 layers
+            - "heavy": More layers for complex scenes  
+            - "light": Minimal flash attention for speed
+            - "disabled": Traditional LFP only
+    """
+    if preset == "default":
+        dela_args.use_flash_attn_blocks = True
+        dela_args.flash_attn_layers = 2
+    elif preset == "heavy":
+        dela_args.use_flash_attn_blocks = True
+        dela_args.flash_attn_layers = 4
+    elif preset == "light":
+        dela_args.use_flash_attn_blocks = True
+        dela_args.flash_attn_layers = 1
+    elif preset == "disabled":
+        dela_args.use_flash_attn_blocks = False
+        dela_args.flash_attn_layers = 0
+    else:
+        raise ValueError(f"Unknown preset: {preset}")
+
+# Mamba2 Configuration Presets
+def configure_mamba2(preset="default"):
+    """
+    Configure Mamba2 settings with different presets
+    
+    Args:
+        preset (str): Configuration preset
+            - "default": Basic Mamba2 with 2 layers
+            - "heavy": More layers for complex dependencies
+            - "light": Minimal Mamba2 for speed
+            - "disabled": No Mamba2 aggregation
+    """
+    if preset == "default":
+        dela_args.run_mamba = True
+        dela_args.mamba_depth = [2]
+        dela_args.mamba_drop_path_rate = 0.1
+    elif preset == "heavy":
+        dela_args.run_mamba = True
+        dela_args.mamba_depth = [4]
+        dela_args.mamba_drop_path_rate = 0.15
+    elif preset == "light":
+        dela_args.run_mamba = True
+        dela_args.mamba_depth = [1]
+        dela_args.mamba_drop_path_rate = 0.05
+    elif preset == "disabled":
+        dela_args.run_mamba = False
+        dela_args.mamba_depth = [0]
+        dela_args.mamba_drop_path_rate = 0.0
+    else:
+        raise ValueError(f"Unknown preset: {preset}")
+
+# Apply default configurations
+configure_flash_attention("disabled")  # Disabled by default, can be enabled by calling configure_flash_attention("default")
+configure_mamba2("default")  # Disabled by default, can be enabled by calling configure_mamba2("default")
+
+# Run Configuration Function
+def configure_run(new_run_id="01"):
+    """
+    Configure run ID for logging and model saving
+    
+    Args:
+        new_run_id (str): Run identifier for this training session
+    """
+    global run_id
+    run_id = new_run_id
