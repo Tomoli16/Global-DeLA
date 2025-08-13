@@ -94,6 +94,7 @@ dela_args.flash_attn_layers = 2  # Number of flash attention layers per block
 dela_args.run_mamba = True  # Enable Mamba2 aggregation (set to True to enable)
 dela_args.mamba_depth = [2]  # Depth of Mamba2 blocks
 dela_args.mamba_drop_path_rate = 0.1  # Drop path rate for Mamba2 blocks
+dela_args.dataset_type = "s3dis"
 
 # Model selection: "dela_semseg" or "dela_semseg_attn"
 model_type = "dela_semseg_attn"

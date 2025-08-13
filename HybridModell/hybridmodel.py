@@ -220,20 +220,27 @@ class Stage(nn.Module):
         # Add conditional projection for S3DIS 7->10 if needed
         self.dataset_type = getattr(args, 'dataset_type', 'scannetv2')  # Default to ScanNetV2
         
+        if self.dataset_type == 's3dis':
+            # S3DIS has 7 input dimensions (xyz + rgb + instance_id)
+            # Project to 10 dimensions (xyz + rgb + instance_id + 3 xyz)
+            expected_input_dim = getattr(args, 'input_feature_dim', 4)
+        else:
+            expected_input_dim = getattr(args, 'input_feature_dim', 7)
+
         if first:
             # Input projection for datasets with different feature dimensions
             # S3DIS: 7 (3 RGB + 1 height + 3 xyz) -> project to 10
             # ScanNetV2: 10 (already target size)
-            expected_input_dim = getattr(args, 'input_feature_dim', 10)  # Can be 7 or 10
+            first_target_dim = 7
             target_dim = 10  # Standardize to 10 for compatibility
-            
-            if expected_input_dim != target_dim:
+
+            if expected_input_dim != first_target_dim:
                 self.input_proj = nn.Sequential(
-                    nn.Linear(expected_input_dim, target_dim, bias=False),
-                    nn.BatchNorm1d(target_dim, momentum=cp_bn_momentum),
+                    nn.Linear(expected_input_dim, first_target_dim, bias=False),
+                    nn.BatchNorm1d(first_target_dim, momentum=cp_bn_momentum),
                     args.act()
                 )
-                print(f"Added input projection: {expected_input_dim} -> {target_dim} dims")
+                print(f"Added input projection: {expected_input_dim} -> {first_target_dim} dims")
             else:
                 self.input_proj = nn.Identity()
             
@@ -643,10 +650,9 @@ class Stage(nn.Module):
         x: N x C
         """
         # Apply input projection for first stage if dimensions don't match
-        if self.first and hasattr(self, 'input_proj'):
+        if self.first:
             original_x = x
             x = self.input_proj(x)
-            print(f"Applied input projection: {original_x.shape[-1]} -> {x.shape[-1]}")
         
         # downsampling
         if not self.first:
