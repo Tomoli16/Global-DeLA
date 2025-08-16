@@ -655,7 +655,7 @@ class Stage(nn.Module):
                 flash_attn_func = lambda x, xyz, pts: self.flash_attn_block_aggregation(x, xyz, pts)
                 x = checkpoint(flash_attn_func, x, xyz, pts) if self.training and self.cp else self.flash_attn_block_aggregation(x, xyz, pts)
 
-        if self.last:
+        if self.first:
             # Apply Mamba2 aggregation if enabled
             if self.run_mamba and self.mamba_block is not None:
                 mamba_func = lambda x, xyz, pts: self.mamba2_aggregation(x, xyz, pts)

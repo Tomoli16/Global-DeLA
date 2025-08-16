@@ -5,7 +5,7 @@ from einops import rearrange
 import sys
 import os
 
-# Projektwurzel bestimmen
+# Determine project root
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
 sys.path.append(os.path.join(project_root, "modules/mamba"))
 
@@ -47,6 +47,16 @@ class Mamba2Block(nn.Module):
 
     Accepts either 3D input [B, L, C] (constant-length) or flat [sum(Ni), C] plus cu_seqlens.
     Automatically handles flattening/unflattening for variable-length sequences.
+    
+    Args:
+        dim: Model dimension
+        layer_idx: Layer index for mamba
+        drop_path: Drop path rate for stochastic depth
+        norm_cls: Normalization layer class
+        fused_add_norm: Whether to use fused add norm
+        residual_in_fp32: Whether to compute residual in fp32
+        expand: Expansion factor for mamba inner dimension
+        **mamba_kwargs: Additional arguments for Mamba2
     """
     def __init__(
             self, 
@@ -63,19 +73,111 @@ class Mamba2Block(nn.Module):
         # partial erstellt Funktion, bei der bestimmte Argumente bereits gesetzt sind
         self.residual_in_fp32 = residual_in_fp32
         self.fused = fused_add_norm
+        self.dim = dim
+        
+        # Normalization and regularization
         self.norm = norm_cls(dim)
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        expand = expand
-        headdim = (dim*expand) // 8
+        
+        # Mamba2 configuration
+        headdim = (dim * expand) // 8
         self.mamba2 = Mamba2(
             d_model=dim,
-            headdim=headdim, # n_heads=channels // 16,
+            headdim=headdim,
             expand=expand,
             use_mem_eff_path=False,
             **mamba_kwargs,
         )
-        self.out_project = nn.Linear(dim*2, dim)  # Output projection to match input dimension
+        
+        # Output projection for bidirectional processing
+        self.out_project = nn.Linear(dim * 2, dim)
 
+    def _reverse_sequences(self, tensor, cu_seqlens):
+        """
+        Reverse sequences within each batch element based on cu_seqlens.
+        
+        Args:
+            tensor: [1, L, C] input tensor
+            cu_seqlens: [B+1] cumulative sequence lengths
+            
+        Returns:
+            reversed_tensor: [1, L, C] tensor with reversed sequences
+        """
+        reversed_tensor = tensor.clone()
+        for i in range(len(cu_seqlens) - 1):
+            start, end = cu_seqlens[i].item(), cu_seqlens[i + 1].item()
+            reversed_tensor[:, start:end, :] = tensor[:, start:end, :].flip(1)
+        return reversed_tensor
+
+    def _process_mamba_forward(self, x_norm, seq_idx, cu_seqlens, inference_params):
+        """
+        Process forward pass through Mamba2.
+        
+        Args:
+            x_norm: [L, C] normalized input
+            seq_idx: sequence indices
+            cu_seqlens: cumulative sequence lengths
+            inference_params: inference parameters
+            
+        Returns:
+            output: [L, C] processed features
+        """
+        # Add batch dimension for Mamba2
+        u = x_norm.unsqueeze(0)  # [1, L, C]
+        
+        # Forward pass
+        u_out = self.mamba2(
+            u,
+            seq_idx=seq_idx,
+            cu_seqlens=cu_seqlens,
+            inference_params=inference_params
+        )
+        
+        return u_out.squeeze(0)  # [L, C]
+
+    def _process_mamba_bidirectional(self, x_norm, seq_idx, cu_seqlens, inference_params):
+        """
+        Process bidirectional pass through Mamba2.
+        
+        Args:
+            x_norm: [L, C] normalized input
+            seq_idx: sequence indices
+            cu_seqlens: cumulative sequence lengths
+            inference_params: inference parameters
+            
+        Returns:
+            output: [L, C] processed features from both directions
+        """
+        # Add batch dimension
+        u = x_norm.unsqueeze(0)  # [1, L, C]
+        
+        # Forward pass
+        u_out_fwd = self.mamba2(
+            u,
+            seq_idx=seq_idx,
+            cu_seqlens=cu_seqlens,
+            inference_params=inference_params
+        )
+        
+        # Backward pass with reversed sequences
+        u_rev = self._reverse_sequences(u, cu_seqlens)
+        u_out_bwd_rev = self.mamba2(
+            u_rev,
+            seq_idx=seq_idx,
+            cu_seqlens=cu_seqlens,
+            inference_params=inference_params
+        )
+        
+        # Reverse the backward output to align with forward
+        u_out_bwd = self._reverse_sequences(u_out_bwd_rev, cu_seqlens)
+        
+        # Concatenate forward and backward outputs
+        u_out_combined = torch.cat([u_out_fwd, u_out_bwd], dim=2)  # [1, L, C*2]
+        
+        # Project back to original dimension
+        u_out_projected = self.out_project(u_out_combined)  # [1, L, C]
+        
+        return u_out_projected.squeeze(0)  # [L, C]
 
     def forward(
             self, 
@@ -87,71 +189,41 @@ class Mamba2Block(nn.Module):
             cu_seqlens=None,
             bidirectional=False
     ):
-        # Pre-Norm + Residual
-
-        # res = x if residual is None else residual + self.drop_path(x)
-        # if self.residual_in_fp32:
-        #     res = res.to(torch.float32)
-        # x = self.norm(res)
-        # residual = res
-
-        x_norm = self.norm(x)
-
-
-        u = x_norm.unsqueeze(0) 
-        # cu_seqlens = build_cu_seqlens(
-        #     pts if pts is not None else [x.size(0)],
-        #     device=u.device
-        # )
-        # Mamba2 forward
-        u_out1 = self.mamba2(
-            u,
-            seq_idx=seq_idx,
-            cu_seqlens=cu_seqlens,
-            inference_params=inference_params
-        )
-        if bidirectional:
-            # Reverse the input for backward pass
-            u_rev = u.clone()
-            for i in range(len(cu_seqlens)-1):
-                s, e = cu_seqlens[i].item(), cu_seqlens[i+1].item()
-                # print(f"[DEBUG] Szene {i}: slice von {s} bis {e}, Länge = {e-s}")
-                seg_before = u[0, s:e, 0].clone()  # Beispiel: erste Dimension, erster Feature-Kanal
-                # print("  before:", seg_before[:5], "...", seg_before[-5:])
-                
-                flipped = u[0, s:e, :].flip(0)     # hier war evtl. Achse vertauscht?
-                seg_after = flipped[:, 0]          # erstes Zeit-Element nach Flip
-                # print("  flipped first three elements:", seg_after[:3])
-                
-                u_rev[:, s:e, :] = flipped
-                # seg_rev = u_rev[0, s:e, 0]
-                # print("  in u_rev:", seg_rev[:5], "...", seg_rev[-5:])
-
-            # Mamba2 backward pass
-            u_out_bwd_rev = self.mamba2(
-                u_rev,
-                seq_idx=seq_idx,
-                cu_seqlens=cu_seqlens,
-                inference_params=inference_params
-            )
-            # Reverse the output of the backward pass
-            u_out2 = torch.empty_like(u_out_bwd_rev)
-            for i in range(len(cu_seqlens)-1):
-                s, e = cu_seqlens[i].item(), cu_seqlens[i+1].item()
-                u_out2[:, s:e, :] = u_out_bwd_rev[:, s:e, :].flip(1)
-            # Combine the outputs from forward and backward passes
-            u_out = torch.cat([u_out1, u_out2], dim=2)  # [1, L, C*2]
-            u_out = self.out_project(u_out)  # [1, L, C]
-            
-        else:
-            u_out = u_out1
+        """
+        Forward pass through Mamba2Block.
         
-        out = u_out.squeeze(0)  # [B, L, C] or [sum(Ni), C]
-
+        Args:
+            x: [L, C] input features
+            pts: point counts per scene (unused, kept for compatibility)
+            residual: optional residual connection (unused)
+            inference_params: parameters for inference
+            seq_idx: sequence indices
+            cu_seqlens: [B+1] cumulative sequence lengths
+            bidirectional: whether to use bidirectional processing
+            
+        Returns:
+            output: [L, C] processed features
+            residual: [L, C] residual connection for next layer
+        """
+        # Pre-normalization
+        x_norm = self.norm(x)
+        
+        # Process through Mamba2
+        if bidirectional:
+            mamba_out = self._process_mamba_bidirectional(
+                x_norm, seq_idx, cu_seqlens, inference_params
+            )
+        else:
+            mamba_out = self._process_mamba_forward(
+                x_norm, seq_idx, cu_seqlens, inference_params
+            )
+        
+        # Convert to fp32 if required
         if self.residual_in_fp32:
-            out = out.to(torch.float32)
-
-        res = x + self.drop_path(out)
-
-        return res, res
+            mamba_out = mamba_out.to(torch.float32)
+        
+        # Apply drop path and residual connection
+        output = x + self.drop_path(mamba_out)
+        
+        return output, output
 

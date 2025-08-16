@@ -50,6 +50,58 @@ class ConditionalPE(nn.Module):
         pe = self.net(xyz_norm) 
         return self.dropout(pe)
 
+class OrderPrompt(nn.Module):
+    """
+    Order Prompt Module: Provides learnable prompts that signal the serialization order used
+    """
+    def __init__(self, d_model, order_list, enabled=True):
+        super().__init__()
+        self.enabled = enabled
+        
+        if not self.enabled:
+            # When disabled, create minimal structure
+            return
+            
+        # Define order mappings dynamically from provided order list
+        self.order_to_idx = {order: idx for idx, order in enumerate(order_list)}
+        self.num_orders = len(order_list)
+        
+        # Learnable order embeddings for all orders
+        self.order_embeddings = nn.Parameter(torch.randn(self.num_orders, d_model) * 0.02)
+        
+        # Projection layer to integrate order prompt
+        self.order_proj = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.LayerNorm(d_model)
+        )
+        
+    def forward(self, x, order_name):
+        """
+        Args:
+            x: Input features [N, C]
+            order_name: String indicating the serialization order used
+        Returns:
+            x_with_prompt: Features enhanced with order prompt [N, C]
+        """
+        # If disabled, return input unchanged
+        if not self.enabled:
+            return x
+            
+        # Get order index
+        order_idx = self.order_to_idx.get(order_name, 0)  # Default to first order if unknown
+        
+        # Get order embedding
+        order_embedding = self.order_embeddings[order_idx]  # [C]
+        
+        # Project order embedding
+        order_prompt = self.order_proj(order_embedding)  # [C]
+        
+        # Add order prompt to all tokens
+        x_with_prompt = x + order_prompt.unsqueeze(0)  # Broadcast to [N, C]
+        
+        return x_with_prompt
+
 class Mlp(nn.Module):
     def __init__(self, in_dim, mlp_ratio, bn_momentum, act, init=0.):
         super().__init__()
@@ -164,6 +216,13 @@ class Stage(nn.Module):
         self.grid_size = args.grid_size[depth]  # grid size for serialization
 
         self.cpe = ConditionalPE(d_model=dim, hidden=dim) 
+        
+        # Check if order prompts are enabled
+        use_order_prompts = getattr(args, 'use_order_prompts', True)
+        order_list = args.order if use_order_prompts and hasattr(args, 'order') and args.order else ['xyz']
+        
+        self.order_prompt = OrderPrompt(d_model=dim, order_list=order_list, enabled=use_order_prompts)
+        
         self.pe_proj = nn.Sequential(
             nn.Linear(dim*2, dim),
             nn.GELU(),
@@ -176,6 +235,9 @@ class Stage(nn.Module):
         self.use_flash_attn_block = getattr(args, 'use_flash_attn_blocks', False)
         if self.use_flash_attn_block:
             flash_attn_layers = getattr(args, 'flash_attn_layers', 2)
+            use_order_prompts = getattr(args, 'use_order_prompts', True)
+            order_list = args.order if use_order_prompts and hasattr(args, 'order') and args.order else ['xyz']
+            
             self.flash_attn_block = FlashAttentionBlock(
                 dim=dim,
                 num_layers=flash_attn_layers,
@@ -185,7 +247,9 @@ class Stage(nn.Module):
                 bn_momentum=args.bn_momentum,
                 act=args.act,
                 order=self.order,
-                grid_size=self.grid_size
+                grid_size=self.grid_size,
+                order_list=order_list,
+                use_order_prompts=use_order_prompts
             )
 
         if not last:
@@ -260,65 +324,6 @@ class Stage(nn.Module):
         xyz_norm = xyz_centered / (max_radii[scene_ids] + eps)  # [total_pts,3]
 
         return xyz_norm
-
-    def flash_attn_aggregation(self, x_flat, xyz_flat, pts):
-        # 1) Choose order
-        possible_orders = self.order if isinstance(self.order, list) else [self.order]
-        chosen_order = random.choice(possible_orders)
-
-        # 2) Serialization
-        xyz_flat, x_flat, _, inverse_order = serialization(
-            xyz_flat, x_flat, order=chosen_order, pts=pts, grid_size=self.grid_size
-        )
-
-        # 3) Flash Attention
-        total, C = x_flat.shape
-        device = x_flat.device
-        seq_lens = pts if pts is not None else [x_flat.shape[0]]
-        cu_seqlens = self.build_cu_seqlens(seq_lens, device=device, dtype=torch.int32)
-        max_seqlen = int(max(seq_lens))
-
-        nheads = 8
-        head_dim = C // nheads
-
-        to_qkv = torch.nn.Linear(C, 3 * C, bias=False).to(device)
-        qkv_flat = to_qkv(x_flat)        # [total, 3*C]
-        q, k, v = qkv_flat.chunk(3, dim=-1)  # [total, C], [total, C], [total, C]
-        # reshape each to [total, nheads, head_dim]
-        q = q.view(total, nheads, head_dim)
-        k = k.view(total, nheads, head_dim)
-        v = v.view(total, nheads, head_dim)
-
-        # pack into qkv: [total, 3, nheads, head_dim]
-        qkv = torch.stack([q, k, v], dim=1)
-        x_out = flash_attn_varlen_qkvpacked_func(
-            qkv,                  # [total, 3, nheads, head_dim]
-            cu_seqlens,           # (B+1,)
-            max_seqlen,           # int
-            dropout_p=0.1,
-            softmax_scale=None,   # standardmäßig 1/sqrt(head_dim)
-            causal=False,
-            window_size=(-1, -1),
-            softcap=0.0,
-            alibi_slopes=None,
-            deterministic=False,
-            return_attn_probs=False,
-        )  # out: [total, nheads, head_dim]
-        x_out_flat = x_out.flatten(1)  # ab Dimension 1 zusammenfalten: [total, C]
-
-        # 4) Deserialization
-        xyz_flat, x_out_flat, _, _ = deserialization(
-            xyz_ser=xyz_flat,
-            feat_ser=x_out_flat,
-            x_res_ser=x_out_flat,
-            inverse_order=inverse_order,
-            layers_outputs_ser=None
-        )
-
-        return x_out_flat
-
-
-
     
     def local_aggregation(self, x, knn, pts):
         x = x.unsqueeze(0)
@@ -337,7 +342,6 @@ class Stage(nn.Module):
         token = torch.cat([x, pe], dim=-1)               # [total,C+pe]
         token = self.pe_proj(token)                           # [total,C]
 
-        # 2) Pre-Norm → Mamba
         token_norm = self.norm(token)
 
         if hasattr(self, 'flash_attn_block'):
@@ -465,7 +469,7 @@ class FlashAttentionBlock(nn.Module):
     Flash Attention Block with multiple attention layers and skip connections
     """
     def __init__(self, dim, num_layers=2, num_heads=8, dropout=0.1, mlp_ratio=4, 
-                 bn_momentum=0.02, act=nn.GELU, order=None, grid_size=0.04):
+                 bn_momentum=0.02, act=nn.GELU, order=None, grid_size=0.04, order_list=None, use_order_prompts=True):
         super().__init__()
         self.dim = dim
         self.num_layers = num_layers
@@ -503,6 +507,12 @@ class FlashAttentionBlock(nn.Module):
             for i in range(num_layers)
         ])
         
+        # Order prompt for each layer
+        order_list_final = order_list or self.order
+        self.order_prompts = nn.ModuleList([
+            OrderPrompt(d_model=dim, order_list=order_list_final, enabled=use_order_prompts) for _ in range(num_layers)
+        ])
+        
         # Final layer norm
         self.final_norm = nn.LayerNorm(dim)
         
@@ -529,6 +539,9 @@ class FlashAttentionBlock(nn.Module):
         xyz_flat, x_flat, _, inverse_order = serialization(
             xyz_flat, x_flat, order=chosen_order, pts=pts, grid_size=self.grid_size
         )
+
+        # Apply order prompt specific to this layer
+        x_flat = self.order_prompts[layer_idx](x_flat, chosen_order)
 
         # Prepare for flash attention
         total, C = x_flat.shape

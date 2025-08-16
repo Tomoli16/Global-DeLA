@@ -31,6 +31,9 @@ dela_args.ks = s3dis_args.k
 dela_args.depths = [4, 4, 8, 4]
 dela_args.grid_size = [0.04, 0.08, 0.16, 0.32]
 dela_args.order = [ "xyz", "xzy", "yxz", "yzx", "zxy", "zyx", "hilbert", "hilbert-trans", "z", "z-trans" ]
+
+# Order Prompt Configuration - simple True/False setting
+dela_args.use_order_prompts = False  # Enable/disable order prompts globally
 dela_args.dims = [64, 128, 256, 512]
 dela_args.nbr_dims = [32, 32]
 dela_args.head_dim = 256
@@ -44,8 +47,13 @@ dela_args.act = nn.GELU
 dela_args.mlp_ratio = 2
 # gradient checkpoint
 dela_args.use_cp = False
-dela_args.run_mamba = True
-dela_args.mamba_depth = [2]  # Mamba2 depth for each stage
+dela_args.run_mamba = False
+dela_args.mamba_depth = [4]  # Mamba2 depth for each stage
+
+# Mamba MLP Configuration
+dela_args.mamba_use_mlp = True  # Add MLP between Mamba layers
+dela_args.mamba_mlp_ratio = 2.0  # MLP expansion ratio
+dela_args.mamba_mlp_act = nn.GELU  # Activation function for Mamba MLPs
 
 dela_args.cor_std = [1.6, 3.2, 6.4, 12.8]
 
@@ -56,7 +64,7 @@ dela_args.flash_attn_layers = 2  # Number of flash attention layers per block
 # Model selection: "dela_semseg" or "dela_semseg_attn"
 model_type = "dela_semseg_attn"
 
-# Flash Attention Configuration Presets
+# Configuration Presets
 def configure_flash_attention(preset="default"):
     """
     Configure flash attention settings with different presets
@@ -83,5 +91,36 @@ def configure_flash_attention(preset="default"):
     else:
         raise ValueError(f"Unknown preset: {preset}")
 
+def configure_mamba_mlp(preset="default"):
+    """
+    Configure Mamba MLP settings with different presets
+    
+    Args:
+        preset (str): Configuration preset
+            - "default": Standard MLP with 2x expansion
+            - "heavy": Larger MLP with 4x expansion  
+            - "light": Smaller MLP with 1.5x expansion
+            - "disabled": No MLP between Mamba layers
+    """
+    if preset == "default":
+        dela_args.mamba_use_mlp = True
+        dela_args.mamba_mlp_ratio = 2.0
+        dela_args.mamba_mlp_act = nn.GELU
+    elif preset == "heavy":
+        dela_args.mamba_use_mlp = True
+        dela_args.mamba_mlp_ratio = 4.0
+        dela_args.mamba_mlp_act = nn.GELU
+    elif preset == "light":
+        dela_args.mamba_use_mlp = True
+        dela_args.mamba_mlp_ratio = 1.5
+        dela_args.mamba_mlp_act = nn.ReLU
+    elif preset == "disabled":
+        dela_args.mamba_use_mlp = False
+        dela_args.mamba_mlp_ratio = 2.0
+        dela_args.mamba_mlp_act = nn.GELU
+    else:
+        raise ValueError(f"Unknown preset: {preset}")
+
 # Apply default configuration
 configure_flash_attention("default")
+configure_mamba_mlp("disabled")

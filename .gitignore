@@ -22,4 +22,5 @@ wandb-debug.log
 S3DIS/output/model/
 ScanNetV2/output/model/
 S3DIS/output/visualizations/outputs/
+*/output
 

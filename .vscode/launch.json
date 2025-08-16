@@ -1,0 +1,164 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Debug pretrain.py",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/HybridModell/pretrain.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--use_wandb",
+                "--run_id",
+                "pretrain_debug"
+            ],
+            "cwd": "${workspaceFolder}/HybridModell",
+            "env": {
+                "CUDA_HOME": "/software/genoa/r24.04/CUDA/12.4.0"
+            }
+        },
+        {
+            "name": "Python: Debug finetune.py - Full Training",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/HybridModell/finetune.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--pretrained_path",
+                "output/model/pretrain_01/best.pt",
+                "--run_id",
+                "s3dis_full_ft_debug",
+                "--partition",
+                "!5",
+                "--val_partition",
+                "5",
+                "--grad_clip",
+                "1.0",
+                "--lr_scale_encoder",
+                "0.1"
+            ],
+            "cwd": "${workspaceFolder}/HybridModell",
+            "env": {
+                "CUDA_HOME": "/software/genoa/r24.04/CUDA/12.4.0",
+                "CUDA_VISIBLE_DEVICES": "0"
+            }
+        },
+        {
+            "name": "Python: Debug finetune.py - Frozen Encoder",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/HybridModell/finetune.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--pretrained_path",
+                "output/model/pretrain_pretrain_002/best_checkpoint.pt",
+                "--freeze_encoder",
+                "--run_id",
+                "s3dis_frozen_debug",
+                "--partition",
+                "!5",
+                "--val_partition",
+                "5",
+                "--grad_clip",
+                "1.0"
+            ],
+            "cwd": "${workspaceFolder}/HybridModell",
+            "env": {
+                "CUDA_HOME": "/software/genoa/r24.04/CUDA/12.4.0",
+                "CUDA_VISIBLE_DEVICES": "0"
+            }
+        },
+        {
+            "name": "Python: Debug finetune.py - Low LR Encoder",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/HybridModell/finetune.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--pretrained_path",
+                "output/model/pretrain_pretrain_001/checkpoint_epoch_030.pt",
+                "--run_id",
+                "s3dis_low_lr_debug",
+                "--partition",
+                "!5",
+                "--val_partition",
+                "5",
+                "--grad_clip",
+                "1.0",
+                "--lr_scale_encoder",
+                "0.05"
+            ],
+            "cwd": "${workspaceFolder}/HybridModell",
+            "env": {
+                "CUDA_HOME": "/software/genoa/r24.04/CUDA/12.4.0",
+                "CUDA_VISIBLE_DEVICES": "0"
+            }
+        },
+        {
+            "name": "Python: Debug finetune.py - Custom Path",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/HybridModell/finetune.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--pretrained_path",
+                "${input:pretrainedPath}",
+                "--run_id",
+                "${input:runId}",
+                "--partition",
+                "${input:trainPartition}",
+                "--val_partition",
+                "${input:valPartition}",
+                "--grad_clip",
+                "1.0",
+                "--lr_scale_encoder",
+                "${input:lrScale}"
+            ],
+            "cwd": "${workspaceFolder}/HybridModell",
+            "env": {
+                "CUDA_HOME": "/software/genoa/r24.04/CUDA/12.4.0",
+                "CUDA_VISIBLE_DEVICES": "0"
+            }
+        }
+    ],
+    "inputs": [
+        {
+            "id": "pretrainedPath",
+            "description": "Path to pretrained model",
+            "default": "output/model/pretrain_pretrain_001/best_checkpoint.pt",
+            "type": "promptString"
+        },
+        {
+            "id": "runId",
+            "description": "Run ID for this experiment",
+            "default": "s3dis_custom_debug",
+            "type": "promptString"
+        },
+        {
+            "id": "trainPartition",
+            "description": "Training partition (e.g., !5 for all except area 5)",
+            "default": "!5",
+            "type": "promptString"
+        },
+        {
+            "id": "valPartition",
+            "description": "Validation partition (e.g., 5 for area 5)",
+            "default": "5",
+            "type": "promptString"
+        },
+        {
+            "id": "lrScale",
+            "description": "Learning rate scale for encoder",
+            "default": "0.1",
+            "type": "promptString"
+        }
+    ]
+}

@@ -51,13 +51,13 @@ learning_rate = 1e-3
 label_smoothing = 0.2
 
 # Run Configuration
-run_id = "01"  # Default run ID, can be overridden by command line arguments
+run_id = "03"  # Default run ID, can be overridden by command line arguments
 
 scan_args = SimpleNamespace()
 scan_args.k = [24, 24, 24, 24, 24]
 scan_args.grid_size = [0.02, 0.04, 0.08, 0.16, 0.32]
 
-scan_args.max_pts = 30000
+scan_args.max_pts = 80000
 
 scan_warmup_args = deepcopy(scan_args)
 scan_warmup_args.grid_size = [0.02, 2, 3.5, 3.5, 4]

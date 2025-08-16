@@ -5,7 +5,7 @@ conda activate dela
 
 
 pip install torch==2.2.0+cu121 torchvision==0.17.0+cu121 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu121
-pip install wandb addict timm "numpy<2.0"
+pip install wandb addict timm "numpy<2.0" scipy ChamferDistance
 
 module load CUDA/12.4.0
 
@@ -22,7 +22,9 @@ cd ../..
 # Remember to install flash attn 
 pip install flash-attn --no-build-isolation
 
-
+cd modules/mamba/
+pip install -e .[causal-conv1d] --no-build-isolation
+cd ../..
 
 echo "Environment setup complete. You can now run DeLA."
 # Run with: source setup.sh
