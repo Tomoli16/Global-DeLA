@@ -64,10 +64,8 @@ class Metric():
     def calc(self, digits=4):
         acc = self.intersection.sum() / self.count.sum()
         self.acc = round(acc.item(), digits)
-        # sichere Division für macc
-        safe_count = torch.where(self.count == 0, torch.ones_like(self.count), self.count)
-        macc_per_class = torch.where(self.count == 0, torch.zeros_like(self.count, dtype=torch.float32), self.intersection.float() / safe_count.float())
-        macc = macc_per_class.mean()
+        macc = self.intersection / self.count
+        macc = macc.mean()
         self.macc = round(macc.item(), digits)
         iou = self.intersection / self.union
         self.iou = [round(i.item(), digits) for i in iou]
