@@ -162,6 +162,19 @@ class S3DIS(Dataset):
             condition = sel.sort()[0]
             xyz = xyz[condition]
             indices = indices[condition]
+
+        # cutout
+        if self.train and not self.warmup:
+            mask = None
+            up = 10
+            up = round(xyz.shape[0] / self.max_pts * up)
+            for _ in range(random.randint(1, up)):
+                pt = random.choice(xyz)
+                cond = (xyz - pt).square().sum(dim=1) < .5**2
+                mask = cond if mask is None else mask | cond
+            mask = ~mask
+            xyz = xyz[mask]
+            indices = indices[mask]
         
         col = col[indices]
         lbl = lbl[indices]

@@ -18,10 +18,20 @@ import wandb
 # Dynamic model import based on config
 if model_type == "dela_semseg":
     from delasemseg import DelaSemSeg as ModelClass
+    print("Using DelaSegmentation model")
 elif model_type == "dela_semseg_attn":
     from delasemseg_attn import DelaSemSeg as ModelClass
+    print("Using DelaSegmentation with Attention model")
+elif model_type == "dela_semseg_baseline":
+    from delasemseg_baseline import DelaSemSeg as ModelClass
+    print("Using DelaSegmentation Baseline model")
+elif model_type == "dela_semseg_attn2":
+    from delasemseg_attn2 import DelaSemSeg as ModelClass
+    print("Using DelaSegmentation with Attention 2 model")
 else:
     raise ValueError(f"Unknown model_type: {model_type}. Use 'dela_semseg' or 'dela_semseg_attn'")
+
+
 
 torch.set_float32_matmul_precision("high")
 
@@ -39,7 +49,7 @@ def warmup_fn(model, dataset):
             loss = F.cross_entropy(p, y) + closs
         loss.backward()
 
-cur_id = "20"
+cur_id = "mamba_in_dela"
 os.makedirs(f"output/log/{cur_id}", exist_ok=True)
 os.makedirs(f"output/model/{cur_id}", exist_ok=True)
 logfile = f"output/log/{cur_id}/out.log"
@@ -79,7 +89,10 @@ print(len(traindlr))
 step_per_epoch = len(traindlr)
 
 model = ModelClass(dela_args).cuda()
-# model = GridSSMamba(dela_args).cuda()
+# Print number of parameter
+print(f"Number of parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+# Print total number of parameter
+print(f"Total number of parameters: {sum(p.numel() for p in model.parameters())}")
 
 optimizer = create_optimizer_v2(model, lr=lr, weight_decay=1e-2)
 scheduler = CosineLRScheduler(optimizer, t_initial = epoch * step_per_epoch, lr_min = lr/10000,

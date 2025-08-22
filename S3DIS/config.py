@@ -47,8 +47,8 @@ dela_args.act = nn.GELU
 dela_args.mlp_ratio = 2
 # gradient checkpoint
 dela_args.use_cp = False
-dela_args.run_mamba = False
-dela_args.mamba_depth = [4]  # Mamba2 depth for each stage
+dela_args.run_mamba = True
+dela_args.mamba_depth = [2]  # Mamba2 depth for each stage
 
 # Mamba MLP Configuration
 dela_args.mamba_use_mlp = True  # Add MLP between Mamba layers
@@ -58,11 +58,11 @@ dela_args.mamba_mlp_act = nn.GELU  # Activation function for Mamba MLPs
 dela_args.cor_std = [1.6, 3.2, 6.4, 12.8]
 
 # Flash Attention Block Configuration
-dela_args.use_flash_attn_blocks = True  # Enable flash attention blocks in stages
+dela_args.use_flash_attn_blocks = False  # Enable flash attention blocks in stages
 dela_args.flash_attn_layers = 2  # Number of flash attention layers per block
 
 # Model selection: "dela_semseg" or "dela_semseg_attn"
-model_type = "dela_semseg_attn"
+model_type = "dela_semseg_attn2"
 
 # Configuration Presets
 def configure_flash_attention(preset="default"):
@@ -122,5 +122,5 @@ def configure_mamba_mlp(preset="default"):
         raise ValueError(f"Unknown preset: {preset}")
 
 # Apply default configuration
-configure_flash_attention("default")
-configure_mamba_mlp("disabled")
+configure_flash_attention("disabled")
+configure_mamba_mlp("default")
