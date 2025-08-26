@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).absolute().parent.parent))
 import utils.util as util
-from delasemseg_attn import DelaSemSeg
+from global_dela import DelaSemSeg
 from config import scan_args, dela_args
 from torch.cuda.amp import autocast
 

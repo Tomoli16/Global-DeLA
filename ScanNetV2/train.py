@@ -18,7 +18,7 @@ import wandb
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='Train DeLA on ScanNetV2')
-parser.add_argument('--model', type=str, default=model_type, choices=['dela_semseg', 'dela_semseg_attn'],
+parser.add_argument('--model', type=str, default=model_type, choices=['dela_semseg', 'dela_semseg_attn', 'global_dela', 'GDLA-Light', 'GDLA-Heavy'],
                     help='Model type to use (default: from config.py)')
 parser.add_argument('--run_id', type=str, default=run_id,
                     help='Run ID for logging and model saving')
@@ -32,10 +32,10 @@ model_type = args.model
 # Dynamic model import based on config
 if model_type == "dela_semseg":
     from delasemseg import DelaSemSeg as ModelClass
-elif model_type == "dela_semseg_attn":
-    from delasemseg_attn import DelaSemSeg as ModelClass
+elif model_type in ("dela_semseg_attn", "global_dela", "GDLA-Light", "GDLA-Heavy"):
+    from global_dela import DelaSemSeg as ModelClass
 else:
-    raise ValueError(f"Unknown model_type: {model_type}. Use 'dela_semseg' or 'dela_semseg_attn'")
+    raise ValueError(f"Unknown model_type: {model_type}.")
 
 torch.set_float32_matmul_precision("high")
 
@@ -112,7 +112,7 @@ scheduler = CosineLRScheduler(optimizer, t_initial = epoch * step_per_epoch, lr_
                                 warmup_t=warmup*step_per_epoch, warmup_lr_init = lr/20)
 scaler = GradScaler()
 # if wish to continue from a checkpoint
-resume = True
+resume = False
 if resume:
     start_epoch = util.load_state(f"output/model/{cur_id}/last.pt", model=model, optimizer=optimizer, scaler=scaler)["start_epoch"]
 else:

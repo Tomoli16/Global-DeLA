@@ -1,40 +1,16 @@
-"""
-ScanNetV2 Configuration for DeLA with Mamba2 Support
-
-This configuration file supports both Flash Attention and Mamba2 aggregation methods.
-
-Usage Examples:
-1. Enable Mamba2 aggregation:
-   configure_mamba2("default")  # or "light", "heavy"
-   
-2. Enable both Flash Attention and Mamba2:
-   configure_flash_attention("default")
-   configure_mamba2("default")
-   
-3. Use only traditional LFP (disable all modern methods):
-   configure_flash_attention("disabled")
-   configure_mamba2("disabled")
-
-4. Set custom run ID:
-   configure_run("experiment_01")
-
-Note: Mamba2 requires mamba_ssm package to be installed.
-If not available, the model will fall back to linear layers.
-"""
-
 from pathlib import Path
 from types import SimpleNamespace
 from copy import deepcopy
 from torch import nn
 import torch
 
-# ScanNetV2 dataset path
-# should contain scans/
+# =====================
+# Dataset paths & train
+# =====================
+# ScanNetV2 dataset path (should contain scans/)
 raw_data_path = Path("data/")
-
 processed_data_path = raw_data_path / "scannetv2"
-# if you want to set the processed dataset path, uncomment here
-#processed_data_path = Path("")
+# processed_data_path = Path("")  # Optional override
 
 scan_train = Path(__file__).parent / "scannetv2_train.txt"
 scan_val = Path(__file__).parent / "scannetv2_val.txt"
@@ -43,127 +19,191 @@ with open(scan_train, 'r') as file:
 with open(scan_val, 'r') as file:
     scan_val = [line.strip() for line in file.readlines()]
 
-# Training Configuration
+# Training schedule
 epoch = 100
 warmup = 10
-batch_size = 16
+batch_size = 4
 learning_rate = 1e-3
 label_smoothing = 0.2
 
 # Run Configuration
-run_id = "03"  # Default run ID, can be overridden by command line arguments
+run_id = "04"  # Default run ID, can be overridden by command line arguments
 
 scan_args = SimpleNamespace()
 scan_args.k = [24, 24, 24, 24, 24]
 scan_args.grid_size = [0.02, 0.04, 0.08, 0.16, 0.32]
-
 scan_args.max_pts = 80000
 
 scan_warmup_args = deepcopy(scan_args)
 scan_warmup_args.grid_size = [0.02, 2, 3.5, 3.5, 4]
 
-dela_args = SimpleNamespace()
-dela_args.ks = scan_args.k
-dela_args.depths = [4, 4, 4, 8, 4]
-dela_args.grid_size = scan_args.grid_size
-dela_args.order = [ "xyz", "xzy", "yxz", "yzx", "zxy", "zyx", "hilbert", "hilbert-trans", "z", "z-trans" ]
-dela_args.dims = [64, 96, 160, 288, 512]
-dela_args.nbr_dims = [32, 32]
-dela_args.head_dim = 288
-dela_args.num_classes = 20
-drop_path = 0.1
-drop_rates = torch.linspace(0., drop_path, sum(dela_args.depths)).split(dela_args.depths)
-dela_args.drop_paths = [dpr.tolist() for dpr in drop_rates]
-dela_args.head_drops = torch.linspace(0., 0.2, len(dela_args.depths)).tolist()
-dela_args.bn_momentum = 0.02
-dela_args.act = nn.GELU
-dela_args.mlp_ratio = 2
-# gradient checkpoint
-dela_args.use_cp = False
 
-dela_args.cor_std = [1.6, 2.5, 5, 10, 20]
+# =====================
+# DeLA configuration
+# =====================
+# Group 1: Backbone (shared core model)
+backbone = SimpleNamespace(
+    # topology
+    ks=scan_args.k,
+    depths=[4, 4, 4, 8, 4],
+    dims=[64, 96, 160, 288, 512],
+    grid_size=scan_args.grid_size,
+    order=[
+        "xyz", "xzy", "yxz", "yzx", "zxy", "zyx",
+        "hilbert", "hilbert-trans", "z", "z-trans"
+    ],
+    # heads & channels
+    nbr_dims=[32, 32],
+    head_dim=288,
+    num_classes=20,
+    # norms & activations
+    bn_momentum=0.02,
+    act=nn.GELU,
+    mlp_ratio=2,
+    # regularization
+    head_drops=None,      # filled below based on depths
+    drop_paths=None,      # filled below based on depths
+    drop_path_max=0.1,    # scalar to generate per-layer rates
+    # misc
+    use_cp=False,
+    cor_std=[1.6, 2.5, 5, 10, 20],
+)
 
-# Flash Attention Block Configuration
-dela_args.use_flash_attn_blocks = False  # Enable flash attention blocks in stages
-dela_args.flash_attn_layers = 2  # Number of flash attention layers per block
+def _build_drop_paths(depths, drop_path_max):
+    dpr = torch.linspace(0., drop_path_max, sum(depths)).split(depths)
+    return [x.tolist() for x in dpr]
 
-# Mamba2 Configuration
-dela_args.run_mamba = True  # Enable Mamba2 aggregation (set to True to enable)
-dela_args.mamba_depth = [2]  # Depth of Mamba2 blocks
-dela_args.mamba_drop_path_rate = 0.1  # Drop path rate for Mamba2 blocks
+def _build_head_drops(num_stages, max_drop=0.2):
+    return torch.linspace(0., max_drop, num_stages).tolist()
 
-# Model selection: "dela_semseg" or "dela_semseg_attn"
-model_type = "dela_semseg_attn"
+# Fill derived backbone schedules
+backbone.drop_paths = _build_drop_paths(backbone.depths, backbone.drop_path_max)
+backbone.head_drops = _build_head_drops(len(backbone.depths), max_drop=0.2)
 
-# Flash Attention Configuration Presets
-def configure_flash_attention(preset="disabled"):
-    """
-    Configure flash attention settings with different presets
-    
-    Args:
-        preset (str): Configuration preset
-            - "default": Basic flash attention with 2 layers
-            - "heavy": More layers for complex scenes  
-            - "light": Minimal flash attention for speed
-            - "disabled": Traditional LFP only
-    """
+
+# Group 2: FlashAttention
+flash = SimpleNamespace(
+    enabled=False,        # use_flash_attn_blocks
+    layers=2,             # flash_attn_layers per block
+    num_heads=8,          # flash_num_heads (current model uses 8 internally)
+    dropout=0.1,          # flash_dropout
+)
+
+
+# Group 3: Mamba
+mamba = SimpleNamespace(
+    run=True,               # run_mamba
+    depth=[2],              # mamba_depth
+    drop_path_rate=0.1,     # mamba_drop_path_rate
+    expand=2,               # mamba_expand
+    # optional MLP between Mamba blocks
+    use_mlp=True,           # mamba_use_mlp
+    mlp_ratio=2.0,          # mamba_mlp_ratio
+    mlp_act=nn.GELU,        # mamba_mlp_act
+)
+
+
+# -------- Helpers to flatten grouped config into the legacy dela_args --------
+def rebuild_dela_args():
+    """Flatten grouped config into a single SimpleNamespace for model code."""
+    da = SimpleNamespace(**vars(backbone))
+
+    # Flash params (legacy names)
+    da.use_flash_attn_blocks = flash.enabled
+    da.flash_attn_layers = flash.layers
+    da.flash_num_heads = flash.num_heads
+    da.flash_dropout = flash.dropout
+
+    # Mamba params (legacy names)
+    da.run_mamba = mamba.run
+    da.mamba_depth = mamba.depth
+    da.mamba_drop_path_rate = mamba.drop_path_rate
+    da.mamba_expand = mamba.expand
+    da.mamba_use_mlp = mamba.use_mlp
+    da.mamba_mlp_ratio = mamba.mlp_ratio
+    da.mamba_mlp_act = mamba.mlp_act
+
+    return da
+
+
+# Presets operating on grouped config, then rebuild flat args
+def configure_flash_attention(preset: str = "disabled"):
     if preset == "default":
-        dela_args.use_flash_attn_blocks = True
-        dela_args.flash_attn_layers = 2
+        flash.enabled = True
+        flash.layers = 2
     elif preset == "heavy":
-        dela_args.use_flash_attn_blocks = True
-        dela_args.flash_attn_layers = 4
+        flash.enabled = True
+        flash.layers = 4
     elif preset == "light":
-        dela_args.use_flash_attn_blocks = True
-        dela_args.flash_attn_layers = 1
+        flash.enabled = True
+        flash.layers = 1
     elif preset == "disabled":
-        dela_args.use_flash_attn_blocks = False
-        dela_args.flash_attn_layers = 0
+        flash.enabled = False
+        flash.layers = 0
     else:
         raise ValueError(f"Unknown preset: {preset}")
+    global dela_args
+    dela_args = rebuild_dela_args()
 
-# Mamba2 Configuration Presets
-def configure_mamba2(preset="default"):
-    """
-    Configure Mamba2 settings with different presets
-    
-    Args:
-        preset (str): Configuration preset
-            - "default": Basic Mamba2 with 2 layers
-            - "heavy": More layers for complex dependencies
-            - "light": Minimal Mamba2 for speed
-            - "disabled": No Mamba2 aggregation
-    """
+
+def configure_mamba(preset: str = "default"):
     if preset == "default":
-        dela_args.run_mamba = True
-        dela_args.mamba_depth = [2]
-        dela_args.mamba_drop_path_rate = 0.1
+        mamba.run = True
+        mamba.depth = [2]
+        mamba.drop_path_rate = 0.1
+        mamba.expand = 2
+        mamba.use_mlp = True
     elif preset == "heavy":
-        dela_args.run_mamba = True
-        dela_args.mamba_depth = [4]
-        dela_args.mamba_drop_path_rate = 0.15
+        mamba.run = True
+        mamba.depth = [4]
+        mamba.drop_path_rate = 0.15
+        mamba.expand = 2
+        mamba.use_mlp = True
     elif preset == "light":
-        dela_args.run_mamba = True
-        dela_args.mamba_depth = [1]
-        dela_args.mamba_drop_path_rate = 0.05
+        mamba.run = True
+        mamba.depth = [1]
+        mamba.drop_path_rate = 0.05
+        mamba.expand = 2
+        mamba.use_mlp = True
     elif preset == "disabled":
-        dela_args.run_mamba = False
-        dela_args.mamba_depth = [0]
-        dela_args.mamba_drop_path_rate = 0.0
+        mamba.run = False
+        mamba.depth = [0]
+        mamba.drop_path_rate = 0.0
+        mamba.expand = 2
+        mamba.use_mlp = False
     else:
         raise ValueError(f"Unknown preset: {preset}")
+    global dela_args
+    dela_args = rebuild_dela_args()
 
-# Apply default configurations
-configure_flash_attention("disabled")  # Disabled by default, can be enabled by calling configure_flash_attention("default")
-configure_mamba2("default")  # Disabled by default, can be enabled by calling configure_mamba2("default")
+
+# Backward-compat alias
+def configure_mamba2(preset: str = "default"):
+    return configure_mamba(preset)
+
+
+# Apply default presets and build the flat args once
+configure_flash_attention("default")     # default to FlashAttention on
+configure_mamba("disabled")              # and Mamba off (GDLA-Light)
+dela_args = rebuild_dela_args()
+
+
+# =====================
+# Model selection
+# =====================
+# "dela_semseg", "global_dela", "GDLA-Light", "GDLA-Heavy"
+model_type = "GDLA-Light"
+
+# Optional presets bound to model_type for convenience
+if model_type == "GDLA-Light":
+    configure_flash_attention("default")
+    configure_mamba("disabled")
+elif model_type == "GDLA-Heavy":
+    configure_flash_attention("disabled")
+    configure_mamba("default")
+
 
 # Run Configuration Function
-def configure_run(new_run_id="01"):
-    """
-    Configure run ID for logging and model saving
-    
-    Args:
-        new_run_id (str): Run identifier for this training session
-    """
+def configure_run(new_run_id: str = "01"):
     global run_id
     run_id = new_run_id
