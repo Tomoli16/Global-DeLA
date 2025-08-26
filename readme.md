@@ -10,8 +10,8 @@ We provide training and evaluation pipelines for **S3DIS** and **ScanNetV2**.
 Clone the repository including submodules:
 
 ```bash
-git clone --recursive <repo-url>
-cd <repo-name>
+git clone --recursive git@github.com:Tomoli16/Global-DeLA.git
+cd Global-DeLA
 ````
 
 If you already cloned without `--recursive`, initialize the submodule manually:
@@ -32,10 +32,27 @@ This will install all dependencies (PyTorch, FlashAttention, Mamba, etc.).
 
 ## 🗂 Datasets
 
-* **S3DIS**: Place the processed dataset under `S3DIS/data/`.
-* **ScanNetV2**: Place the processed dataset under `ScanNetV2/data/`.
+### S3DIS
 
-Refer to the official dataset websites for download instructions.
+Download S3DIS from [ETH CVG](https://cvg-data.inf.ethz.ch/s3dis/) (we use `Stanford3dDataset_v1.2_Aligned_Version`).
+After download, set the correct `raw_data_path` in your config file and run:
+
+```bash
+python prepare_s3dis.py
+```
+
+This will preprocess the dataset into the required format.
+
+### ScanNetV2
+
+Follow the instructions from the official [ScanNet GitHub](https://github.com/ScanNet/ScanNet) to obtain the data.
+After downloading, run:
+
+```bash
+python prepare_scannetv2.py
+```
+
+For additional details regarding dataset preparation and setup, please also check the [official DeLA repository](https://github.com/Matrix-ASC/DeLA/tree/main).
 
 ---
 
@@ -46,30 +63,13 @@ Training is fully configured through the `config/` files:
 * For **S3DIS**: `S3DIS/config/`
 * For **ScanNetV2**: `ScanNetV2/config/`
 
-Each config specifies all hyperparameters (backbone, GTM module, serialization, augmentation, optimizer).
+Each config specifies all hyperparameters (backbone, GTM module, serialization).
 You can switch between predefined variants or define your own:
 
 * **GDLA-Light**: Uses FlashAttention in the final stage.
 * **GDLA-Heavy**: Uses Mamba-2 after the backbone.
 
-Simply change the `model` field in the corresponding config.
-
-**Example (YAML):**
-
-```yaml
-model: GDLA-Light
-dataset: S3DIS
-max_points: 30000
-batch_size: 8
-epochs: 100
-optimizer:
-  type: AdamW
-  lr: 0.001
-  weight_decay: 0.05
-scheduler:
-  type: cosine
-  warmup_epochs: 10
-```
+Simply change the `model_type` field in the corresponding config.
 
 ---
 
@@ -79,17 +79,37 @@ Run training with:
 
 ```bash
 cd S3DIS
-python train.py --config config/<your_config>.yaml
+python train.py
 ```
 
 or
 
 ```bash
 cd ScanNetV2
-python train.py --config config/<your_config>.yaml
+python train.py
 ```
 
 All arguments are passed via the config files.
+
+---
+
+## ✅ Testing
+
+After training, you can evaluate a trained model checkpoint by running:
+
+```bash
+cd S3DIS
+python test.py
+```
+
+or
+
+```bash
+cd ScanNetV2
+python test.py
+```
+
+Again, all arguments and paths are handled via the config files.
 
 ---
 
@@ -113,26 +133,3 @@ We provide configs to reproduce the main results reported in the paper:
 * Make sure to load the **Mamba submodule** (`modules/mamba`) before running training.
 * All results in the paper were obtained with the configs included in this repository.
 * You can modify any config file to explore custom backbone depths, feature dims, or GTM modules.
-
----
-
-## 📜 Citation
-
-If you use this code in your research, please cite:
-
-```
-@misc{your2025globaldela,
-  author       = {Your Name},
-  title        = {Global DeLA: Efficient Global Token Mixing for 3D Point Clouds},
-  year         = {2025},
-  howpublished = {GitHub repository},
-  url          = {<repo-url>}
-}
-```
-
-```
-
----
-
-👉 Soll ich dir auch gleich eine **sekundäre Trainingsanleitung für Slurm/HPC** (Jobscript mit `srun`/`sbatch`) in die README einbauen, da du ja auch auf der H100/Capella trainierst?
-```
