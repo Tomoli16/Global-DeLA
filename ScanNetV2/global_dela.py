@@ -330,7 +330,7 @@ class Stage(nn.Module):
             closs = F.mse_loss(rel_p, rel_cor)
             sub_c = sub_c + closs if sub_c is not None else closs
 
-        if self.first and self.use_flash_attn_block:
+        if self.last and self.use_flash_attn_block:
             flash_attn_func = lambda x, xyz, pts: self.flash_attn_block_aggregation(x, xyz, pts)
             x = checkpoint(flash_attn_func, x, xyz, pts) if self.training and self.cp else self.flash_attn_block_aggregation(x, xyz, pts)
 
