@@ -1,4 +1,3 @@
-````markdown
 # Global DeLA
 
 This repository contains the code for **Global DeLA**, a hybrid architecture for 3D point cloud semantic segmentation that augments the efficient DeLA backbone with global token mixing modules (FlashAttention and Mamba-2).  
