@@ -52,8 +52,8 @@ def main():
 	if model_type == "dela_semseg":
 		from delasemseg import DelaSemSeg as ModelClass  # type: ignore
 		print("Using model: DelaSemSeg")
-	elif model_type == "dela_semseg_attn":
-		from delasemseg_attn import DelaSemSeg as ModelClass  # type: ignore
+	elif model_type in ("dela_semseg_attn", "global_dela", "GDLA-Light", "GDLA-Heavy"):
+		from global_dela import DelaSemSeg as ModelClass  # type: ignore
 	elif model_type == "dela_semseg_baseline":
 		from delasemseg_baseline import DelaSemSeg as ModelClass  # type: ignore
 	else:
