@@ -178,5 +178,15 @@ dela_args = rebuild_dela_args()
 # =====================
 # Model selection
 # =====================
-# "dela_semseg", "dela_semseg_attn", or "dela_semseg_baseline"
-model_type = "dela_semseg_attn"
+# "dela_semseg", "global_dela", "GDLA-Light", "GDLA-Heavy", or "dela_semseg_baseline"
+model_type = "GDLA-Light"
+
+# Optional presets bound to model_type for convenience
+# - GDLA-Light: FlashAttention default, Mamba disabled
+# - GDLA-Heavy: Mamba default, FlashAttention disabled
+if model_type == "GDLA-Light":
+    configure_flash_attention("default")
+    configure_mamba("disabled")
+elif model_type == "GDLA-Heavy":
+    configure_flash_attention("disabled")
+    configure_mamba("default")

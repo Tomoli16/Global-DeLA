@@ -245,7 +245,7 @@ if __name__ == "__main__":
         # If user didn't pass custom weights, use baseline default
         weights_path = args.weights if args.weights != default_attn_weights else "pretrained/best.pt"
     else:
-        model_mod = importlib.import_module('delasemseg_attn')
+        model_mod = importlib.import_module('global_dela')
         weights_path = args.weights
 
     ModelClass = getattr(model_mod, 'DelaSemSeg')

@@ -7,7 +7,13 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).absolute().parent.parent))
 import utils.util as util
-from delasemseg_attn import DelaSemSeg
+from config import model_type
+if model_type in ("dela_semseg_attn", "global_dela", "GDLA-Light", "GDLA-Heavy"):
+    from global_dela import DelaSemSeg
+elif model_type == "dela_semseg":
+    from delasemseg import DelaSemSeg
+else:
+    from delasemseg_baseline import DelaSemSeg
 from config import s3dis_args, dela_args
 from torch.cuda.amp import autocast
 
@@ -20,7 +26,7 @@ testdlr = DataLoader(S3DIS(s3dis_args, partition="5", loop=loop, train=False, te
 
 model = DelaSemSeg(dela_args).cuda()
 
-util.load_state("output/model/default_mamba_clean2/best.pt", model=model)
+util.load_state("output/model/gdla-light/best.pt", model=model)
 
 model.eval()
 

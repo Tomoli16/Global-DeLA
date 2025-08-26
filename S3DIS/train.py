@@ -18,12 +18,12 @@ import wandb
 # Dynamic model import based on config
 if model_type == "dela_semseg":
     from delasemseg import DelaSemSeg as ModelClass
-elif model_type == "dela_semseg_attn":
-    from delasemseg_attn import DelaSemSeg as ModelClass
+elif model_type in ("dela_semseg_attn", "global_dela", "GDLA-Light", "GDLA-Heavy"):
+    from global_dela import DelaSemSeg as ModelClass
 elif model_type == "dela_semseg_baseline":
     from delasemseg_baseline import DelaSemSeg as ModelClass
 else:
-    raise ValueError(f"Unknown model_type: {model_type}. Use 'dela_semseg' or 'dela_semseg_attn'")
+    raise ValueError(f"Unknown model_type: {model_type}. Use 'dela_semseg', 'global_dela', or 'dela_semseg_baseline'")
 
 torch.set_float32_matmul_precision("high")
 
@@ -41,7 +41,7 @@ def warmup_fn(model, dataset):
             loss = F.cross_entropy(p, y) + closs
         loss.backward()
 
-cur_id = "gdla-light"
+cur_id = "gdla-light-2"
 os.makedirs(f"output/log/{cur_id}", exist_ok=True)
 os.makedirs(f"output/model/{cur_id}", exist_ok=True)
 logfile = f"output/log/{cur_id}/out.log"
