@@ -1,29 +1,26 @@
 #!/bin/bash
-
+# --- Conda env ---
 conda create -n dela python=3.10 -y
 conda activate dela
 
+# --- PyTorch + vision/audio (alle passend zueinander) ---
+pip install -U --index-url https://download.pytorch.org/whl/cu121 \
+  "torch==2.4.1" "torchvision==0.19.1" "torchaudio==2.4.1"
 
-pip install torch==2.1.1 torchvision==0.16.1 torchaudio==2.1.1 --index-url https://download.pytorch.org/whl/cu121
-pip install wandb addict timm "numpy<2.0"
+# --- Basics & Libs ---
+pip install wandb addict "timm>=0.9.12" "numpy<2.0" scipy
 
-module load CUDA/12.4.0
-
-export CUDA_HOME=/software/genoa/r24.04/CUDA/12.4.0
-export TORCH_CUDA_ARCH_LIST="9.0"
-
-conda install -c conda-forge h5py=3.8.0 -y
-
+# --- pointnet2 ops ---
 cd utils/pointnet2_ops_lib/
 pip install .
+cd ../..
 
-# Remember to install mamaba 
-cd ../../modules/mamba/
-git fetch --tags
-git checkout v2.2.4
-pip install -e .[causal-conv1d] --no-build-isolation --constraint constraints.txt
+# --- FlashAttention (gegen Torch 2.4.x bauen/holen) ---
+pip install --no-build-isolation "flash-attn==2.6.3"
 
+# --- Mamba v2 + causal-conv1d (modern API) ---
+cd modules/mamba/
+pip install -e ".[causal-conv1d]" --no-build-isolation
 cd ../..
 
 echo "Environment setup complete. You can now run DeLA."
-# Run with: source setup.sh
