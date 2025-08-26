@@ -24,3 +24,5 @@ ScanNetV2/output/model/
 S3DIS/output/visualizations/outputs/
 */output
 
+.vscode/
+
