@@ -12,9 +12,17 @@ from utils.timm.models.layers import DropPath
 from utils.cutils import knn_edge_maxpooling
 from utils.transforms import serialization
 from utils.transforms import deserialization
+from mamba_layer import Mamba2Block
 
 def checkpoint(function, *args, **kwargs):
     return torch_checkpoint(function, *args, use_reentrant=False, **kwargs)
+
+class SequentialWithArgs(nn.Sequential):
+    def forward(self, x, *args, **kwargs):
+        last_res = None
+        for module in self:
+            x, last_res = module(x, *args, **kwargs)
+        return x, last_res
 
 class LFP(nn.Module):
     r"""
@@ -119,6 +127,89 @@ class Mlp(nn.Module):
         x = self.mlp(x.view(B*N, -1)).view(B, N, -1)
         return x
 
+class MambaMlp(nn.Module):
+    """MLP for use between Mamba layers with flat input/output."""
+    def __init__(self, in_dim, mlp_ratio, act):
+        super().__init__()
+        hid_dim = round(in_dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, hid_dim),
+            act(),
+            nn.Linear(hid_dim, in_dim),
+        )
+    
+    def forward(self, x, *args, **kwargs):
+        """
+        Args:
+            x: [L, C] input features
+            *args, **kwargs: compatibility with Mamba2Block interface
+            
+        Returns:
+            output: [L, C] processed features  
+            residual: [L, C] same as output for compatibility
+        """
+        out = self.mlp(x)
+        return out
+
+class MambaResidualBlock(nn.Module):
+    """
+    Residual block combining Mamba2Block + MLP with proper residual connections.
+    
+    Args:
+        dim: Model dimension
+        layer_idx: Layer index for Mamba2
+        drop_path: Drop path rate
+        expand: Expansion factor for Mamba2
+        use_mlp: Whether to include MLP after Mamba2
+        mlp_ratio: MLP expansion ratio
+        mlp_act: MLP activation function
+    """
+    def __init__(self, dim, layer_idx, drop_path=0., expand=2, use_mlp=True, mlp_ratio=2.0, mlp_act=nn.GELU):
+        super().__init__()
+        self.use_mlp = use_mlp
+        
+        # Mamba2 block with internal residual connections
+        self.mamba_block = Mamba2Block(
+            dim=dim,
+            layer_idx=layer_idx, 
+            drop_path=drop_path,
+            expand=expand
+        )
+        
+        # Optional MLP layer
+        if use_mlp:
+            self.norm = nn.LayerNorm(dim)
+            self.mlp = MambaMlp(dim, mlp_ratio, mlp_act)
+            
+    def forward(self, x, *args, **kwargs):
+        """
+        Forward pass with proper residual connections.
+        
+        Args:
+            x: [L, C] input features
+            *args, **kwargs: passed to Mamba2Block
+            
+        Returns:
+            output: [L, C] processed features
+            residual: [L, C] same as output for compatibility
+        """
+        # Store input for block-level residual connection
+        x_input = x
+        
+        # Mamba2 processing (already has internal residual: input + mamba_output)
+        x_mamba, _ = self.mamba_block(x, *args, **kwargs)
+        
+        # MLP processing with block-level residual connection
+        if self.use_mlp:
+            x_mamba_norm = self.norm(x_mamba)
+            x_mlp = self.mlp(x_mamba_norm)
+            # Block-level residual: connect input to final output
+            x_out = x_mamba + x_mlp
+        else:
+            x_out = x_mamba
+            
+        return x_out, x_out
+
 class Block(nn.Module):
     def __init__(self, dim, depth, drop_path, mlp_ratio, bn_momentum, act):
         super().__init__()
@@ -212,37 +303,41 @@ class Stage(nn.Module):
             args.act(),
             nn.Linear(32, 3, bias=False),
         )
-        self.order = args.order
-        self.grid_size = args.grid_size[depth]  # grid size for serialization
-
-        self.cpe = ConditionalPE(d_model=dim, hidden=dim) 
         
-        # Check if order prompts are enabled
-        use_order_prompts = getattr(args, 'use_order_prompts', True)
-        order_list = args.order if use_order_prompts and hasattr(args, 'order') and args.order else ['xyz']
-        
-        self.order_prompt = OrderPrompt(d_model=dim, order_list=order_list, enabled=use_order_prompts)
-        
-        self.pe_proj = nn.Sequential(
-            nn.Linear(dim*2, dim),
-            nn.GELU(),
-            nn.LayerNorm(dim)
-        )
-        self.norm = nn.LayerNorm(dim)
-
 
         # Flash Attention Block (separate from traditional Block)
         self.use_flash_attn_block = getattr(args, 'use_flash_attn_blocks', False)
+        self.run_mamba = getattr(args, 'run_mamba', False)
         if self.use_flash_attn_block:
+            # Flash Attn depth
             flash_attn_layers = getattr(args, 'flash_attn_layers', 2)
+
+            # Check if order prompts are enabled (from config)
             use_order_prompts = getattr(args, 'use_order_prompts', True)
-            order_list = args.order if use_order_prompts and hasattr(args, 'order') and args.order else ['xyz']
+            # Always define order_list safely; when disabled, pass None to block
+            order_list = (args.order if hasattr(args, 'order') and args.order else ['xyz']) if use_order_prompts else None
+
+            self.order = args.order
+            self.grid_size = args.grid_size[depth]  # grid size for serialization
+
+            # CPE
+            self.cpe = ConditionalPE(d_model=dim, hidden=dim)    
+            self.pe_proj = nn.Sequential(
+                nn.Linear(dim*2, dim),
+                nn.GELU(),
+                nn.LayerNorm(dim)
+            )
+            self.norm = nn.LayerNorm(dim)
             
+            # Pull FlashAttention hyperparameters from config
+            flash_num_heads = getattr(args, 'flash_num_heads', 8)
+            flash_dropout = getattr(args, 'flash_dropout', 0.1)
+
             self.flash_attn_block = FlashAttentionBlock(
                 dim=dim,
                 num_layers=flash_attn_layers,
-                num_heads=8,
-                dropout=0.1,
+                num_heads=flash_num_heads,
+                dropout=flash_dropout,
                 mlp_ratio=args.mlp_ratio,
                 bn_momentum=args.bn_momentum,
                 act=args.act,
@@ -431,6 +526,13 @@ class DelaSemSeg(nn.Module):
         mlp_ratio:      2, can be float
         use_cp:         False, enable gradient checkpoint to save memory
                         If True, blocks and spatial encoding are checkpointed
+        run_mamba:      False, enable Mamba2 processing after stages
+        mamba_depth:    [2], number of Mamba layers
+        mamba_use_mlp:  True, whether to use MLP in Mamba blocks
+        mamba_mlp_ratio: 2.0, MLP expansion ratio in Mamba blocks
+        mamba_mlp_act:  nn.GELU, MLP activation in Mamba blocks
+        order:          ['xyz'], serialization orders for Mamba
+        grid_size:      [0.04], grid sizes for serialization
     """
     def __init__(self, args):
         super().__init__()
@@ -449,6 +551,43 @@ class DelaSemSeg(nn.Module):
             nn.Linear(hid_dim, out_dim)
         )
         
+        # Mamba components
+        self.run_mamba = getattr(args, 'run_mamba', False)
+        if self.run_mamba:
+            # Mamba configuration
+            mamba_depth = getattr(args, 'mamba_depth', [2])[0]
+            drop_path_rate = getattr(args, 'drop_path_rate', 0.2)
+            dpr = [x.item() for x in torch.linspace(0, drop_path_rate, mamba_depth)]
+            
+            # Order and grid configuration
+            self.order = getattr(args, 'order', ['xyz'])
+            self.grid_size = getattr(args, 'grid_size', [0.04])[-1]  # Use last grid size
+            
+            # Positional encoding and normalization for Mamba
+            self.cpe = ConditionalPE(d_model=hid_dim, hidden=hid_dim)
+            self.pe_proj = nn.Sequential(
+                nn.Linear(hid_dim*2, hid_dim),
+                nn.GELU(),
+                nn.LayerNorm(hid_dim)
+            )
+            self.norm = nn.LayerNorm(hid_dim)
+            
+            # Mamba blocks
+            mamba_blocks = []
+            for i in range(mamba_depth):
+                block = MambaResidualBlock(
+                    dim=hid_dim,
+                    layer_idx=i,
+                    drop_path=dpr[i],
+                    expand=getattr(args, 'mamba_expand', 2),
+                    use_mlp=getattr(args, 'mamba_use_mlp', True),
+                    mlp_ratio=getattr(args, 'mamba_mlp_ratio', 2.0),
+                    mlp_act=getattr(args, 'mamba_mlp_act', nn.GELU)
+                )
+                mamba_blocks.append(block)
+            
+            self.mamba_block = SequentialWithArgs(*mamba_blocks)
+        
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -456,10 +595,230 @@ class DelaSemSeg(nn.Module):
             trunc_normal_(m.weight, std=.02)
             if isinstance(m, nn.Linear) and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
+    
+    def _build_cu_seqlens(self, pts, device=None, dtype=torch.long):
+        """
+        Convert per-scene point counts to cumulative sequence lengths tensor.
+
+        Args:
+            pts: List[int] or Tensor [B] of point counts per scene
+            device: torch.device for output
+            dtype: torch.dtype for output
+        Returns:
+            cu_seqlens: Tensor [B+1]
+        """
+        # pts in Tensor umwandeln
+        if isinstance(pts, list):
+            pts_tensor = torch.tensor(pts, dtype=torch.long, device=device)
+        else:
+            pts_tensor = pts.to(device=device, dtype=torch.long)
+
+        # Build cumulative sequence lengths: [0, N0, N0+N1, ...]
+        cu_seqlens = torch.cat([
+            pts_tensor.new_zeros(1),        # Start with [0]
+            pts_tensor.cumsum(0)            # Add cumulative sums
+        ])
+        return cu_seqlens.to(device=device, dtype=dtype)
+    
+    def _normalize_xyz_flat(self, xyz_flat, cu_seqlens, eps=1e-6):
+        """
+        Normalize xyz coordinates per scene to [-1, 1] range.
+        
+        Args:
+            xyz_flat: [total_pts, 3] flattened coordinates
+            cu_seqlens: [B+1] cumulative sequence lengths
+            eps: small epsilon to avoid division by zero
+            
+        Returns:
+            xyz_norm: [total_pts, 3] normalized coordinates
+        """
+        device = xyz_flat.device
+        B = cu_seqlens.numel() - 1  # Number of scenes
+
+        # Points per scene
+        pts = cu_seqlens[1:] - cu_seqlens[:-1]  # [B]
+
+        # Scene IDs per point: [0...0, 1...1, ...]
+        scene_ids = torch.arange(B, device=device).repeat_interleave(pts)  # [total_pts]
+
+        # Compute center per scene
+        sum_xyz = torch.zeros(B, 3, device=device).scatter_add_(
+            0, scene_ids.unsqueeze(-1).expand(-1, 3), xyz_flat
+        )  # [B, 3]
+        count = pts.unsqueeze(-1).to(xyz_flat.dtype)  # [B, 1]
+        center = sum_xyz / (count + eps)  # [B, 3]
+
+        # Center coordinates
+        xyz_centered = xyz_flat - center[scene_ids]  # [total_pts, 3]
+
+        # Compute radius per point
+        radii = torch.linalg.norm(xyz_centered, dim=1, keepdim=True)  # [total_pts, 1]
+
+        # Max radius per scene
+        max_radii = torch.zeros(B, 1, device=device)  # [B, 1]
+        max_radii.scatter_reduce_(
+            0,
+            scene_ids.unsqueeze(-1).expand(-1, 1),
+            radii,
+            reduce='amax',
+            include_self=True
+        )  # [B, 1]
+
+        # Normalize to [-1, 1] range
+        xyz_norm = xyz_centered / (max_radii[scene_ids] + eps)  # [total_pts, 3]
+
+        return xyz_norm
+
+    def _add_positional_encoding(self, x_flat, xyz_flat, pts):
+        """
+        Add positional encoding to features.
+        
+        Args:
+            x_flat: [total_pts, C] input features
+            xyz_flat: [total_pts, 3] coordinates
+            pts: [B] points per scene
+            
+        Returns:
+            features_with_pe: [total_pts, C] features with positional encoding
+        """
+        # Build cumulative sequence lengths
+        cu_seqlens = self._build_cu_seqlens(pts, device=xyz_flat.device)
+        
+        # Normalize coordinates per scene
+        xyz_norm = self._normalize_xyz_flat(xyz_flat, cu_seqlens)
+        
+        # Generate positional encoding
+        pe = self.cpe(xyz_norm)  # [total_pts, C]
+        
+        # Combine features with positional encoding
+        combined_features = torch.cat([x_flat, pe], dim=-1)  # [total_pts, C*2]
+        features_with_pe = self.pe_proj(combined_features)  # [total_pts, C]
+        
+        return features_with_pe, cu_seqlens
+
+    def _serialize_features(self, xyz_flat, features_norm, pts, order):
+        """
+        Serialize features using the specified order.
+        
+        Args:
+            xyz_flat: [total_pts, 3] coordinates
+            features_norm: [total_pts, C] normalized features
+            pts: [B] points per scene
+            order: serialization order
+            
+        Returns:
+            xyz_ser: serialized coordinates
+            features_ser: serialized features
+            inverse_order: order for deserialization
+        """
+        # Choose serialization order
+        possible_orders = order if isinstance(order, list) else [order]
+        chosen_order = random.choice(possible_orders)
+
+        # Perform serialization
+        xyz_ser, features_ser, _, inverse_order = serialization(
+            xyz_flat, features_norm, 
+            order=chosen_order, 
+            pts=pts, 
+            grid_size=self.grid_size
+        )
+        
+        return xyz_ser, features_ser, inverse_order
+
+    def _process_mamba_blocks(self, features_ser, pts, cu_seqlens, inference_params):
+        """
+        Process features through Mamba2 blocks.
+        
+        Args:
+            features_ser: [total_pts, C] serialized features
+            pts: [B] points per scene
+            cu_seqlens: [B+1] cumulative sequence lengths
+            inference_params: inference parameters
+            
+        Returns:
+            features_out: [total_pts, C] processed features
+            features_res: [total_pts, C] residual features
+        """
+        return self.mamba_block(
+            features_ser,
+            pts=pts,
+            cu_seqlens=cu_seqlens,
+            inference_params=inference_params,
+            bidirectional=True,
+        )
+
+    def _deserialize_features(self, xyz_ser, features_out, features_res, inverse_order):
+        """
+        Deserialize features back to original order.
+        
+        Args:
+            xyz_ser: serialized coordinates
+            features_out: [total_pts, C] processed features
+            features_res: [total_pts, C] residual features
+            inverse_order: deserialization order
+            
+        Returns:
+            xyz_deser: deserialized coordinates
+            features_out_deser: deserialized features
+            features_res_deser: deserialized residual features
+        """
+        return deserialization(
+            xyz_ser=xyz_ser,
+            feat_ser=features_out,
+            x_res_ser=features_res,
+            inverse_order=inverse_order,
+            layers_outputs_ser=None
+        )
+
+    def mamba2_aggregation(self, x_flat, xyz_flat, pts, inference_params=None):
+        """
+        Apply Mamba2 aggregation with serialization for efficient point cloud processing.
+        
+        Args:
+            x_flat: [total_pts, C] flattened features
+            xyz_flat: [total_pts, 3] flattened coordinates
+            pts: [B] points per scene
+            inference_params: optional inference parameters
+            
+        Returns:
+            features_out: [total_pts, C] processed features with residual connection
+        """
+        # Store original input for proper residual connection
+        x_original = x_flat.clone()
+        
+        # Add positional encoding
+        features_with_pe, cu_seqlens = self._add_positional_encoding(x_flat, xyz_flat, pts)
+
+        # Pre-normalization
+        features_norm = self.norm(features_with_pe)
+        
+        # Serialize features for efficient processing
+        xyz_ser, features_ser, inverse_order = self._serialize_features(
+            xyz_flat, features_norm, pts, self.order
+        )
+
+        # Process through Mamba2 blocks
+        features_out, _ = self._process_mamba_blocks(
+            features_ser, pts, cu_seqlens, inference_params
+        )
+        
+        # Deserialize back to original order
+        _, features_out_final, _, _ = self._deserialize_features(
+            xyz_ser, features_out, features_out, inverse_order
+        )
+        
+        # Proper residual connection to original input
+        return x_original + features_out_final
 
     def forward(self, xyz, x, indices, pts_list=None):
         indices = indices[:]
+        pts = pts_list[-1] if pts_list else [x.shape[0]]
         x, closs = self.stage(x, xyz, None, indices, pts_list)
+
+        # Apply Mamba2 aggregation after stages but before head
+        if self.run_mamba:
+            x = self.mamba2_aggregation(x, xyz, pts)
+        
         if self.training:
             return self.head(x), closs
         return self.head(x)
@@ -468,17 +827,21 @@ class FlashAttentionBlock(nn.Module):
     """
     Flash Attention Block with multiple attention layers and skip connections
     """
-    def __init__(self, dim, num_layers=2, num_heads=8, dropout=0.1, mlp_ratio=4, 
-                 bn_momentum=0.02, act=nn.GELU, order=None, grid_size=0.04, order_list=None, use_order_prompts=True):
+    def __init__(self, dim, num_layers=2, num_heads=8, dropout=0.1, mlp_ratio=4,
+                 bn_momentum=0.02, act=nn.GELU, order=None, grid_size=0.04,
+                 order_list=None, use_order_prompts=True):
         super().__init__()
         self.dim = dim
         self.num_layers = num_layers
         self.num_heads = num_heads
+        if dim % num_heads != 0:
+            raise ValueError(f"FlashAttentionBlock: dim ({dim}) must be divisible by num_heads ({num_heads})")
         self.head_dim = dim // num_heads
         self.dropout = dropout
         self.order = order or ["xyz", "hilbert", "z"]
         self.grid_size = grid_size
-        
+        self.use_order_prompts = bool(use_order_prompts)
+
         # Multiple attention layers
         self.attention_layers = nn.ModuleList([
             nn.ModuleDict({
@@ -488,7 +851,7 @@ class FlashAttentionBlock(nn.Module):
                 'dropout': nn.Dropout(dropout)
             }) for _ in range(num_layers)
         ])
-        
+
         # MLP layers for each attention layer
         self.mlp_layers = nn.ModuleList([
             nn.Sequential(
@@ -500,19 +863,22 @@ class FlashAttentionBlock(nn.Module):
                 nn.Dropout(dropout)
             ) for _ in range(num_layers)
         ])
-        
+
         # Skip connection projections
         self.skip_projections = nn.ModuleList([
             nn.Linear(dim, dim, bias=False) if i > 0 else nn.Identity()
             for i in range(num_layers)
         ])
-        
-        # Order prompt for each layer
-        order_list_final = order_list or self.order
-        self.order_prompts = nn.ModuleList([
-            OrderPrompt(d_model=dim, order_list=order_list_final, enabled=use_order_prompts) for _ in range(num_layers)
-        ])
-        
+
+        # Order prompt for each layer (optional)
+        if self.use_order_prompts:
+            order_list_final = order_list or self.order
+            self.order_prompts = nn.ModuleList([
+                OrderPrompt(d_model=dim, order_list=order_list_final, enabled=True) for _ in range(num_layers)
+            ])
+        else:
+            self.order_prompts = None
+
         # Final layer norm
         self.final_norm = nn.LayerNorm(dim)
         
@@ -540,8 +906,9 @@ class FlashAttentionBlock(nn.Module):
             xyz_flat, x_flat, order=chosen_order, pts=pts, grid_size=self.grid_size
         )
 
-        # Apply order prompt specific to this layer
-        x_flat = self.order_prompts[layer_idx](x_flat, chosen_order)
+        # Apply order prompt specific to this layer (if enabled)
+        if self.use_order_prompts and self.order_prompts is not None:
+            x_flat = self.order_prompts[layer_idx](x_flat, chosen_order)
 
         # Prepare for flash attention
         total, C = x_flat.shape

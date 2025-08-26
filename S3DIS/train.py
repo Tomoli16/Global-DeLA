@@ -20,6 +20,8 @@ if model_type == "dela_semseg":
     from delasemseg import DelaSemSeg as ModelClass
 elif model_type == "dela_semseg_attn":
     from delasemseg_attn import DelaSemSeg as ModelClass
+elif model_type == "dela_semseg_baseline":
+    from delasemseg_baseline import DelaSemSeg as ModelClass
 else:
     raise ValueError(f"Unknown model_type: {model_type}. Use 'dela_semseg' or 'dela_semseg_attn'")
 
@@ -39,7 +41,7 @@ def warmup_fn(model, dataset):
             loss = F.cross_entropy(p, y) + closs
         loss.backward()
 
-cur_id = "20"
+cur_id = "gdla-light"
 os.makedirs(f"output/log/{cur_id}", exist_ok=True)
 os.makedirs(f"output/model/{cur_id}", exist_ok=True)
 logfile = f"output/log/{cur_id}/out.log"
@@ -73,7 +75,6 @@ traindlr = DataLoader(S3DIS(s3dis_args, partition="!5", loop=30), batch_size=bat
 testdlr = DataLoader(S3DIS(s3dis_args, partition="5", loop=1, train=False), batch_size=1,
                       collate_fn=s3dis_collate_fn, pin_memory=True, 
                       persistent_workers=True, num_workers=16)
-print(len(traindlr))
 
 
 step_per_epoch = len(traindlr)
